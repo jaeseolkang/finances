@@ -1,4 +1,4 @@
-// v2.99 | 2026-06-29 KST | 수정: 데이터백업(JSON)에 전체백업 모드 추가(기본 선택), 범위설정을 연-월-일 단위 date input으로 세분화 | cache:v203
+// v3.00 | 2026-06-29 KST | 수정: 비밀번호 미설정 시 최초 로그인에서 바로 설정 가능하도록 수정 (Catch-22 해결) | cache:v204
 'use strict';
 
 // ============================================================
@@ -4170,7 +4170,17 @@ function renderSettings() {
       err.textContent = '확인 중...';
       try {
         const saved = await getAdminPasswordFromFirebase();
-        if (!saved) { err.textContent = '비밀번호가 설정되지 않았어요'; return; }
+        if (!saved) {
+          // 최초 설정: 저장된 비밀번호가 없으면 입력한 값을 최초 비밀번호로 등록
+          if (pw.trim().length < 4) { err.textContent = '최초 비밀번호는 4자 이상으로 설정해주세요'; return; }
+          const ok = await saveAdminPasswordToFirebase(pw.trim());
+          if (!ok) { err.textContent = '비밀번호 저장에 실패했어요'; return; }
+          setIsAdmin(true);
+          applyLockState();
+          renderSettings();
+          showToast('🔐 비밀번호가 최초로 설정됐어요');
+          return;
+        }
         if (pw.trim() === String(saved).trim()) {
           setIsAdmin(true);
           applyLockState();

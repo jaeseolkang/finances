@@ -1,4 +1,4 @@
-// v3.00 | 2026-06-29 KST | 수정: 비밀번호 미설정 시 최초 로그인에서 바로 설정 가능하도록 수정 (Catch-22 해결) | cache:v204
+// v3.01 | 2026-06-29 KST | 수정: 비밀번호 미설정 시 로그인 화면 안내문구를 '최초 설정' 모드로 동적 전환 | cache:v205
 'use strict';
 
 // ============================================================
@@ -3909,8 +3909,8 @@ function renderSettings() {
         </div>
       ` : `
         <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;">
-          <div class="settings-label">🔒 열람 전용 모드</div>
-          <div class="settings-sub">비밀번호를 입력해 입력 모드로 전환하세요</div>
+          <div class="settings-label" id="loginModeLabel">🔒 열람 전용 모드</div>
+          <div class="settings-sub" id="loginModeSub">비밀번호를 입력해 입력 모드로 전환하세요</div>
           <div style="position:relative;width:100%;">
             <input type="password" id="adminPwInput" class="textinput" placeholder="비밀번호" style="font-size:14px;padding:10px 44px 10px 12px;width:100%;box-sizing:border-box;">
             <button id="toggleLogin" type="button" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;cursor:pointer;color:var(--text-2);">👁</button>
@@ -4197,6 +4197,21 @@ function renderSettings() {
     };
     btnLogin.addEventListener('click', doLogin);
     if (loginInp) loginInp.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+    // 비밀번호가 한 번도 설정되지 않았으면 안내문구를 '최초 설정' 모드로 전환
+    (async () => {
+      try {
+        const saved = await getAdminPasswordFromFirebase();
+        if (!saved) {
+          const lbl = page.querySelector('#loginModeLabel');
+          const sub = page.querySelector('#loginModeSub');
+          if (lbl) lbl.textContent = '🔑 비밀번호 최초 설정';
+          if (sub) sub.textContent = '로그인을 위해 비밀번호를 설정하세요';
+          if (loginInp) loginInp.placeholder = '사용할 비밀번호 입력 (4자 이상)';
+          btnLogin.textContent = '비밀번호 설정';
+        }
+      } catch(e) {}
+    })();
   }
 
 

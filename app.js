@@ -1,5 +1,186 @@
-// v2.94 | 2026-06-28 02:40 KST | 수정: 월장부 인쇄 페이지별 테이블 분리 - 헤더 완전 반복 | cache:v198
+// v2.99 | 2026-06-29 KST | 수정: 데이터백업(JSON)에 전체백업 모드 추가(기본 선택), 범위설정을 연-월-일 단위 date input으로 세분화 | cache:v203
 'use strict';
+
+// ============================================================
+// 🔧 배포 설정 스위치
+// church-finances 저장소: true / finances 저장소: false
+// ============================================================
+const USE_FIREBASE = false;
+
+
+
+/* =========================================================
+   비밀번호 / 입력 모드 제어
+   ========================================================= */
+
+// 비밀번호 가져오기 (Firebase or IndexedDB)
+async function getAdminPasswordFromFirebase() {
+  if (!USE_FIREBASE) {
+    try {
+      const rec = await DB.get('settings', 'adminPw');
+      return rec ? rec.value : null;
+    } catch(e) { return null; }
+  }
+  try { return await fbGet('churchData/adminPassword'); }
+  catch(e) { return null; }
+}
+
+// 비밀번호 저장 (Firebase or IndexedDB)
+async function saveAdminPasswordToFirebase(pw) {
+  if (!USE_FIREBASE) {
+    try {
+      await DB.put('settings', { key: 'adminPw', value: pw });
+      return true;
+    } catch(e) { return false; }
+  }
+  try { await fbSet('churchData/adminPassword', pw); return true; }
+  catch(e) { return false; }
+}
+
+function showPasswordPrompt(onSuccess, onCancel) {
+  const existing = document.getElementById('pwOverlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'pwOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `
+    <div style="background:var(--card);border-radius:20px;padding:28px 24px;width:300px;max-width:90vw;box-shadow:0 8px 40px rgba(0,0,0,0.3);text-align:center;">
+      <div style="font-size:32px;margin-bottom:8px;">🔑</div>
+      <div style="font-size:17px;font-weight:700;margin-bottom:4px;">입력 모드 전환</div>
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:16px;">비밀번호를 입력하세요</div>
+      <input type="password" id="pwInput" placeholder="비밀번호"
+        style="width:100%;padding:12px;border:1.5px solid var(--border);border-radius:12px;font-size:16px;text-align:center;margin-bottom:8px;box-sizing:border-box;">
+      <div id="pwError" style="color:#e53e3e;font-size:12px;margin-bottom:12px;min-height:16px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button id="pwCancel" style="flex:1;padding:12px;border-radius:12px;background:var(--surface-2);font-size:14px;font-weight:600;border:none;">취소</button>
+        <button id="pwConfirm" style="flex:1;padding:12px;border-radius:12px;background:var(--primary);color:#fff;font-size:14px;font-weight:700;border:none;">확인</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const input = overlay.querySelector('#pwInput');
+  const error = overlay.querySelector('#pwError');
+  setTimeout(() => input.focus(), 100);
+
+  const tryLogin = async () => {
+    const pw = input.value;
+    if (!pw) { error.textContent = '비밀번호를 입력해주세요'; return; }
+    // Firebase에서 비밀번호 확인
+    const saved = await getAdminPasswordFromFirebase();
+    if (!saved) { error.textContent = '비밀번호가 설정되지 않았어요 (설정에서 등록)'; return; }
+    if (pw.trim() === String(saved).trim()) {
+      setIsAdmin(true);
+      overlay.remove();
+      applyLockState();
+      onSuccess && onSuccess();
+      showToast('🔓 입력 모드로 전환됐어요');
+    } else {
+      error.textContent = '비밀번호가 틀렸어요';
+      input.value = '';
+      input.focus();
+    }
+  };
+
+  overlay.querySelector('#pwConfirm').addEventListener('click', tryLogin);
+  overlay.querySelector('#pwCancel').addEventListener('click', () => { overlay.remove(); onCancel && onCancel(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+}
+
+// + 버튼 등 입력 요소 잠금 (배너 없이)
+function applyLockState() {
+  const isAdmin = getIsAdmin();
+  const fab = document.getElementById('fabAdd');
+  const tab = State.tab;
+  if (fab) {
+    const hiddenTabs = ['settings','members','accounts'];
+    fab.style.display = (!isAdmin || hiddenTabs.includes(tab)) ? 'none' : 'flex';
+  }
+}
+
+/* =========================================================
+   Firebase Realtime Database 동기화
+   ========================================================= */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyB2zT9Wi_uecCfjSU90Up8geerZOskPCbs",
+  authDomain: "juwon-church.firebaseapp.com",
+  databaseURL: "https://juwon-church-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "juwon-church",
+  storageBucket: "juwon-church.firebasestorage.app",
+  messagingSenderId: "410693392195",
+  appId: "1:410693392195:web:f62c07dfdfe4bdfd73c1f6"
+};
+
+// Firebase REST API 방식 (SDK 불필요 - fetch만 사용)
+const FB_URL = 'https://juwon-church-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+async function fbGet(path) {
+  const res = await fetch(`${FB_URL}/${path}.json`);
+  if (!res.ok) throw new Error('FB GET failed: ' + res.status);
+  return res.json();
+}
+
+async function fbSet(path, data) {
+  const res = await fetch(`${FB_URL}/${path}.json`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error('FB SET failed: ' + res.status);
+  return res.json();
+}
+
+// Firebase에 전체 데이터 저장
+async function syncToFirebase() {
+  if (!USE_FIREBASE) return false;
+  try {
+    const allTemplates = await DB.getAll('templates');
+    const data = {
+      syncedAt: new Date().toISOString(),
+      categories: State.categories,
+      persons: State.persons,
+      subItems: State.subItems,
+      subGroups: State.subGroups || [],
+      linkedAccounts: State.linkedAccounts || [],
+      transactions: State.transactions,
+      templates: allTemplates || [],
+    };
+    await fbSet('churchData', data);
+    console.log('Firebase sync OK');
+    return true;
+  } catch (e) {
+    console.error('Firebase sync error:', e);
+    return false;
+  }
+}
+
+// Firebase에서 데이터 불러와서 로컬 DB 업데이트
+async function syncFromFirebase() {
+  if (!USE_FIREBASE) return false;
+  try {
+    // 먼저 syncedAt만 가져와서 비교 (전체 데이터 안 받음)
+    const remoteSyncedAt = await fbGet('churchData/syncedAt');
+    if (!remoteSyncedAt) return false;
+
+    const localSyncRec = await DB.get('settings', 'firebaseSyncedAt');
+    const localSyncedAt = localSyncRec ? localSyncRec.value : null;
+    if (localSyncedAt && remoteSyncedAt <= localSyncedAt) {
+      console.log('Firebase: 로컬이 최신');
+      return false;
+    }
+
+    // 실제로 새 데이터가 있을 때만 전체 다운로드
+    const data = await fbGet('churchData');
+    if (!data || !data.transactions) return false;
+
+    await restoreFromData(data);
+    await DB.put('settings', { key: 'firebaseSyncedAt', value: data.syncedAt });
+    showToast('☁️ 클라우드에서 최신 데이터를 불러왔어요');
+    return true;
+  } catch (e) {
+    console.error('Firebase load error:', e);
+    return false;
+  }
+}
+
 
 /* =========================================================
    DB LAYER
@@ -159,11 +340,40 @@ async function seedIfEmpty() {
   if (!settings) {
     await DB.put('settings', { key: 'general', monthStartDay: 1, currency: 'KRW' });
   }
+  // 대표계정이 없으면 자동 생성
+  const accounts = await DB.getAll('linkedAccounts');
+  if (accounts.length === 0) {
+    await DB.put('linkedAccounts', {
+      id: uid(),
+      name: '대표계정',
+      isDefault: true,
+      accountKind: 'normal',
+      carryover: 0,
+      order: 0,
+    });
+  }
 }
 
 /* =========================================================
    APP STATE
    ========================================================= */
+// 관리자 권한 상태 - IndexedDB settings에 저장 (앱 재실행 후에도 유지)
+function getIsAdmin() { return localStorage.getItem('churchAdmin') === '1'; }
+function setIsAdmin(v) { 
+  v ? localStorage.setItem('churchAdmin','1') : localStorage.removeItem('churchAdmin');
+  // IndexedDB에도 동기화 (백업)
+  if (typeof DB !== 'undefined') DB.put('settings', { key: 'adminLoggedIn', value: v ? '1' : '0' }).catch(()=>{});
+}
+async function restoreAdminState() {
+  // localStorage 먼저 확인
+  if (localStorage.getItem('churchAdmin') === '1') return;
+  // IndexedDB에서 복원 (Firebase 호출 없음 - 빠름)
+  try {
+    const rec = await DB.get('settings', 'adminLoggedIn');
+    if (rec && rec.value === '1') localStorage.setItem('churchAdmin', '1');
+  } catch(e) {}
+}
+
 const State = {
   tab: 'home',
   homeView: 'calendar', // 'calendar' | 'daily' | 'monthly'
@@ -531,16 +741,20 @@ function txInCursorMonth() {
 function monthSummary() {
   const list = txInCursorMonth();
   const carryoverCat = State.categories.find(c => c.name === '전년이월');
-  let income = 0, expense = 0;
+  const depositCat = State.categories.find(c => c.type === 'expense' && c.name === '예금');
+  let income = 0, expense = 0, deposit = 0;
   for (const t of list) {
     if (t.type === 'income') {
       if (carryoverCat && t.categoryId === carryoverCat.id) continue;
       income += t.amount;
     } else {
       expense += t.amount;
+      if (depositCat && t.categoryId === depositCat.id) deposit += t.amount;
     }
   }
-  return { income, expense, balance: income - expense };
+  const netExpense = expense - deposit;
+  const netTotal = income - netExpense;
+  return { income, expense, balance: income - expense, deposit, netExpense, netTotal };
 }
 
 async function totalAssets() {
@@ -737,7 +951,9 @@ function renderShell() {
 
 function renderTabbar() {
   const bar = document.getElementById('tabbar');
-  bar.innerHTML = TABS.map(t => `
+  const isAdmin = getIsAdmin();
+  const visibleTabs = TABS.filter(t => isAdmin || t.key !== 'members');
+  bar.innerHTML = visibleTabs.map(t => `
     <button class="tab-btn ${State.tab === t.key ? 'active' : ''}" data-tab="${t.key}">
       ${ICONS[t.key](State.tab === t.key)}
       <span>${t.label}</span>
@@ -754,8 +970,9 @@ function switchTab(key) {
   document.getElementById('page-' + key).classList.add('active');
   renderTabbar();
   renderCurrentPage();
-  document.getElementById('fabAdd').style.display = (key === 'settings' || key === 'members' || key === 'accounts') ? 'none' : 'flex';
-  // 홈 탭 보조 상태 초기화는 renderHome에서 처리
+  const isAdmin = getIsAdmin();
+  document.getElementById('fabAdd').style.display = (key === 'settings' || key === 'members' || key === 'accounts' || !isAdmin) ? 'none' : 'flex';
+  applyLockState();
 }
 
 function renderCurrentPage() {
@@ -829,7 +1046,7 @@ function dateToStr(d) {
 
 async function renderHome() {
   const page = document.getElementById('page-home');
-  const { income, expense, balance } = monthSummary();
+  const { income, expense, balance, deposit, netExpense: monthNetExpense, netTotal } = monthSummary();
   const { totalIncome, totalExpense, depositExp, netExpense, carryover, net } = await totalAssets();
   const netColor = net < 0 ? 'var(--expense-light)' : '#fff';
 
@@ -873,18 +1090,37 @@ async function renderHome() {
       </div>
     </div>
 
-    <div class="cal-summary-row">
-      <div class="cal-summary-col">
-        <div class="cal-summary-label">수입</div>
-        <div class="cal-summary-value income tabular">${fmtMoney(income)}</div>
+    <div class="cal-summary-row" style="flex-direction:column;">
+      <div style="display:flex;width:100%;">
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">수입</div>
+          <div class="cal-summary-value income tabular">${fmtMoney(income)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">지출</div>
+          <div class="cal-summary-value expense tabular">${fmtMoney(expense)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">합계</div>
+          <div class="cal-summary-value tabular">${fmtMoney(balance)}</div>
+        </div>
       </div>
-      <div class="cal-summary-col">
-        <div class="cal-summary-label">지출</div>
-        <div class="cal-summary-value expense tabular">${fmtMoney(expense)}</div>
-      </div>
-      <div class="cal-summary-col">
-        <div class="cal-summary-label">합계</div>
-        <div class="cal-summary-value tabular">${fmtMoney(balance)}</div>
+
+      <div style="width:100%;border-top:1px solid rgba(0,0,0,0.08);margin:8px 0;"></div>
+
+      <div style="display:flex;width:100%;">
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">예금</div>
+          <div class="cal-summary-value tabular">${fmtMoney(deposit)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">순지출</div>
+          <div class="cal-summary-value tabular">${fmtMoney(monthNetExpense)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">순수입계</div>
+          <div class="cal-summary-value tabular" style="color:${netTotal>=0?'#2563eb':'#dc2626'};">${netTotal>=0?'':'-'}${fmtMoney(Math.abs(netTotal))}</div>
+        </div>
       </div>
     </div>
 
@@ -2499,7 +2735,7 @@ function printAccounts({sub, accounts, totals, grandNet, grandNetColor, mainNet,
 
   const fmt = n => n ? n.toLocaleString('ko-KR') : '-';
   const shortName = name => name.replace(/계정$/, '');
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayStr();
 
   // 테이블 행 생성 함수
   const makeRows = (acctList, isDeposit) => {
@@ -3225,7 +3461,7 @@ async function renderAccounts() {
           // 만기 경과 여부
           let matColor = 'var(--text-3)';
           if (md) {
-            const today = new Date().toISOString().slice(0,10);
+            const today = todayStr();
             matColor = md < today ? 'var(--expense)' : 'var(--primary)';
           }
           maturityTd = `<td class="acct-tbl-num" style="color:${matColor};font-size:12px;">${matLabel}</td>`;
@@ -3625,16 +3861,102 @@ function renderSettings() {
     </div>
 
     <div class="settings-group">
+      <div class="settings-group-title">🔐 입력 모드</div>
+      ${getIsAdmin() ? `
+        <div class="settings-row" style="justify-content:space-between;align-items:center;">
+          <div>
+            <div class="settings-label">🔓 입력 모드 중</div>
+            <div class="settings-sub">데이터 입력/수정이 가능합니다</div>
+          </div>
+          <button id="btnLogout" style="padding:6px 14px;border-radius:20px;background:var(--surface-2);font-size:12px;font-weight:700;border:1px solid var(--border);">로그아웃</button>
+        </div>
+        <div class="settings-row" style="justify-content:space-between;align-items:center;">
+          <div>
+            <div class="settings-label">비밀번호 변경</div>
+            <div class="settings-sub">버튼을 눌러 변경하세요</div>
+          </div>
+          <button id="btnChangePw" style="padding:6px 14px;border-radius:20px;background:var(--surface-2);font-size:12px;font-weight:700;border:1px solid var(--border);">변경</button>
+        </div>
+        <div id="pwChangeForm" style="display:none;flex-direction:column;gap:10px;padding:12px 16px;background:var(--surface-1);border-radius:12px;margin:0 0 8px;">
+          <div id="pwStep1" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="font-size:13px;font-weight:600;color:var(--text-1);">현재 비밀번호 확인</div>
+            <div style="position:relative;">
+              <input type="password" id="adminPwCurrent" class="textinput" placeholder="현재 비밀번호" style="font-size:14px;padding:10px 44px 10px 12px;width:100%;box-sizing:border-box;">
+              <button id="toggleCur" type="button" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;cursor:pointer;color:var(--text-2);">👁</button>
+            </div>
+            <div id="pwCurError" style="color:var(--expense);font-size:12px;min-height:14px;"></div>
+            <div style="display:flex;gap:8px;">
+              <button id="btnPwStep1Cancel" style="flex:1;padding:10px;border-radius:10px;background:var(--surface-2);border:none;font-size:13px;font-weight:600;">취소</button>
+              <button id="btnPwStep1Next" class="btn-primary" style="flex:1;padding:10px;margin-top:0;font-size:13px;">확인</button>
+            </div>
+          </div>
+          <div id="pwStep2" style="display:none;flex-direction:column;gap:8px;">
+            <div style="font-size:13px;font-weight:600;color:var(--text-1);">새 비밀번호 입력</div>
+            <div style="position:relative;">
+              <input type="password" id="adminPwNew" class="textinput" placeholder="새 비밀번호 (4자 이상)" style="font-size:14px;padding:10px 44px 10px 12px;width:100%;box-sizing:border-box;">
+              <button id="toggleNew" type="button" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;cursor:pointer;color:var(--text-2);">👁</button>
+            </div>
+            <div style="position:relative;">
+              <input type="password" id="adminPwNewConfirm" class="textinput" placeholder="새 비밀번호 재입력" style="font-size:14px;padding:10px 44px 10px 12px;width:100%;box-sizing:border-box;">
+              <button id="toggleNewConfirm" type="button" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;cursor:pointer;color:var(--text-2);">👁</button>
+            </div>
+            <div id="pwNewError" style="color:var(--expense);font-size:12px;min-height:14px;"></div>
+            <div style="display:flex;gap:8px;">
+              <button id="btnPwStep2Cancel" style="flex:1;padding:10px;border-radius:10px;background:var(--surface-2);border:none;font-size:13px;font-weight:600;">취소</button>
+              <button id="adminPwSave" class="btn-primary" style="flex:1;padding:10px;margin-top:0;font-size:13px;">변경 저장</button>
+            </div>
+          </div>
+        </div>
+      ` : `
+        <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;">
+          <div class="settings-label">🔒 열람 전용 모드</div>
+          <div class="settings-sub">비밀번호를 입력해 입력 모드로 전환하세요</div>
+          <div style="position:relative;width:100%;">
+            <input type="password" id="adminPwInput" class="textinput" placeholder="비밀번호" style="font-size:14px;padding:10px 44px 10px 12px;width:100%;box-sizing:border-box;">
+            <button id="toggleLogin" type="button" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;cursor:pointer;color:var(--text-2);">👁</button>
+          </div>
+          <div id="loginError" style="color:#e53e3e;font-size:12px;min-height:16px;"></div>
+          <button id="btnLogin" class="btn-primary" style="width:100%;padding:12px;margin-top:0;font-size:14px;border-radius:12px;">로그인</button>
+        </div>
+      `}
+    </div>
+
+
+    ${USE_FIREBASE ? `
+    <div class="settings-group">
+      <div class="settings-group-title">☁️ 클라우드 동기화</div>
+      <div class="settings-row" id="rowSyncUp">
+        <div>
+          <div class="settings-label">지금 업로드</div>
+          <div class="settings-sub">현재 데이터를 클라우드에 저장</div>
+        </div>
+        <span style="font-size:18px;">⬆️</span>
+      </div>
+      <div class="settings-row" id="rowSyncDown">
+        <div>
+          <div class="settings-label">지금 다운로드</div>
+          <div class="settings-sub">클라우드에서 최신 데이터 가져오기</div>
+        </div>
+        <span style="font-size:18px;">⬇️</span>
+      </div>
+    </div>` : ''}
+
+    <div class="settings-group">
       <div class="settings-group-title">정기예금 만기 알림</div>
-      <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
-        <div class="settings-label">알림 수신 이메일</div>
-        <div class="settings-sub">앱 실행 시 만기 7일 전 · 당일에 메일을 보내요</div>
-        <div style="display:flex;gap:8px;width:100%;margin-top:4px;">
-          <input type="email" id="maturityEmailInput" class="textinput"
-            placeholder="example@gmail.com"
-            style="flex:1;font-size:13px;padding:8px 12px;">
-          <button id="maturityEmailSave" class="btn-primary"
-            style="width:auto;padding:0 16px;margin-top:0;font-size:13px;">저장</button>
+      <div class="settings-row" style="justify-content:space-between;align-items:center;" id="emailDisplayRow">
+        <div>
+          <div class="settings-label">알림 수신 이메일</div>
+          <div class="settings-sub" id="emailDisplaySub">설정된 이메일 없음</div>
+        </div>
+        <button id="btnEmailChange" style="padding:6px 14px;border-radius:20px;background:var(--surface-2);font-size:12px;font-weight:700;border:1px solid var(--border);white-space:nowrap;">설정</button>
+      </div>
+      <div id="emailChangeForm" style="display:none;flex-direction:column;gap:8px;padding:12px 16px;background:var(--surface-1);border-radius:12px;margin:0 0 8px;">
+        <div style="font-size:13px;color:var(--text-2);">앱 실행 시 만기 30일 이내 계좌를 이 주소로 알려드려요</div>
+        <input type="email" id="maturityEmailInput" class="textinput" placeholder="example@gmail.com" style="font-size:14px;padding:10px 12px;">
+        <div id="emailError" style="color:var(--expense);font-size:12px;min-height:14px;"></div>
+        <div style="display:flex;gap:8px;">
+          <button id="btnEmailCancel" style="flex:1;padding:10px;border-radius:10px;background:var(--surface-2);border:none;font-size:13px;font-weight:600;">취소</button>
+          <button id="maturityEmailSave" class="btn-primary" style="flex:1;padding:10px;margin-top:0;font-size:13px;">저장</button>
         </div>
       </div>
       <div class="settings-row" id="rowMaturityCheck" style="cursor:pointer;">
@@ -3646,30 +3968,7 @@ function renderSettings() {
       </div>
     </div>
 
-    <div class="settings-group">
-      <div class="settings-group-title">자동 백업</div>
-      <div class="settings-row" style="justify-content:space-between;">
-        <div>
-          <div class="settings-label">매주 일요일 자동 백업</div>
-          <div class="settings-sub">앱 실행 시 일요일이면 자동으로 백업해요</div>
-        </div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="autoBackupToggle">
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <div class="settings-row" id="rowAutoBackupFolder" style="display:none;">
-        <div>
-          <div class="settings-label">백업 폴더 지정</div>
-          <div class="settings-sub" id="autoBackupFolderSub">지정 안 됨 (자동 다운로드)</div>
-        </div>
-        ${ICONS.chevR}
-      </div>
-      <div class="settings-row" id="rowAutoBackupNow" style="display:none;">
-        <div><div class="settings-label">지금 바로 백업</div></div>
-        ${ICONS.download}
-      </div>
-    </div>
+
 
     <div class="settings-group">
       <div class="settings-group-title">데이터</div>
@@ -3696,7 +3995,7 @@ function renderSettings() {
       </div>
       <div class="settings-row" id="rowImport">
         <div>
-          <div class="settings-label">데이터 가져오기</div>
+          <div class="settings-label">데이터 가져오기${getIsAdmin()?'':' 🔒'}</div>
           <div class="settings-sub">백업 JSON 파일에서 복원</div>
         </div>
         ${ICONS.upload}
@@ -3709,7 +4008,7 @@ function renderSettings() {
       <div class="settings-group-title">정보</div>
       <div class="settings-row">
         <div class="settings-label">버전</div>
-        <div class="settings-value">v2.91 (cache v195)</div>
+        <div class="settings-value">v2.94 (cache v1007)</div>
       </div>
       <div class="settings-row" id="rowUpdate" style="cursor:pointer;">
         <div class="settings-label">앱 업데이트</div>
@@ -3731,32 +4030,6 @@ function renderSettings() {
     if (el) el.textContent = t;
   });
 
-  // 자동 백업 토글 초기 상태 (에러가 나도 이벤트 등록에 영향 없도록 독립 실행)
-  (async () => {
-    try {
-      const enabled = await getAutoBackupEnabled();
-      const toggle = page.querySelector('#autoBackupToggle');
-      if (!toggle) return;
-      toggle.checked = enabled;
-      const folderRow = page.querySelector('#rowAutoBackupFolder');
-      const nowRow = page.querySelector('#rowAutoBackupNow');
-      if (enabled) { folderRow.style.display = ''; nowRow.style.display = ''; }
-      try {
-        const dirHandle = await getAutoBackupDirHandle();
-        if (dirHandle) page.querySelector('#autoBackupFolderSub').textContent = `📁 ${dirHandle.name}`;
-      } catch (_) {}
-      toggle.addEventListener('change', async () => {
-        await setAutoBackupEnabled(toggle.checked);
-        folderRow.style.display = toggle.checked ? '' : 'none';
-        nowRow.style.display = toggle.checked ? '' : 'none';
-        showToast(toggle.checked ? '자동 백업 켰어요' : '자동 백업 껐어요');
-      });
-    } catch (_) {}
-  })();
-
-  page.querySelector('#rowAutoBackupFolder').addEventListener('click', pickAutoBackupFolder);
-  page.querySelector('#rowAutoBackupNow').addEventListener('click', () => runAutoBackup(true));
-
   page.querySelector('#rowAppTitle').addEventListener('click', async () => {
     const current = await getAppTitle();
     openAppTitleSheet(current, (trimmed) => {
@@ -3766,14 +4039,170 @@ function renderSettings() {
       showToast('앱 이름이 변경됐어요');
     });
   });
-  page.querySelector('#rowLinkedAccounts').addEventListener('click', () => openLinkedAccountsSheet());
-  page.querySelector('#rowCats').addEventListener('click', () => openCatManageSheet());
+  page.querySelector('#rowLinkedAccounts').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openLinkedAccountsSheet(); });
+  page.querySelector('#rowCats').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openCatManageSheet(); });
   page.querySelector('#rowItemStructure').addEventListener('click', () => openItemStructureSheet());
   page.querySelector('#rowLedger').addEventListener('click', () => openLedgerSheet());
   page.querySelector('#rowExportExcel').addEventListener('click', exportExcel);
   page.querySelector('#rowExport').addEventListener('click', openBackupRangeSheet);
-  page.querySelector('#rowEmailBackup').addEventListener('click', sendBackupByEmail);
-  page.querySelector('#rowImport').addEventListener('click', () => page.querySelector('#importFile').click());
+  page.querySelector('#rowEmailBackup').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } sendBackupByEmail(); });
+  // 로그아웃
+  const btnLogout = page.querySelector('#btnLogout');
+  if (btnLogout) {
+    btnLogout.addEventListener('click', () => {
+      setIsAdmin(false);
+      if (State.tab === 'members') switchTab('home');
+      applyLockState();
+      renderTabbar();
+      renderSettings();
+      showToast('👁️ 열람 모드로 전환됐어요');
+    });
+  }
+
+  // 비밀번호 변경 버튼
+  const btnChangePw = page.querySelector('#btnChangePw');
+  if (btnChangePw) {
+    const form = page.querySelector('#pwChangeForm');
+    const step1 = page.querySelector('#pwStep1');
+    const step2 = page.querySelector('#pwStep2');
+
+    const closeForm = () => {
+      form.style.display = 'none';
+      step1.style.display = 'flex';
+      step2.style.display = 'none';
+      page.querySelector('#adminPwCurrent').value = '';
+      page.querySelector('#adminPwNew').value = '';
+      page.querySelector('#adminPwNewConfirm').value = '';
+      page.querySelector('#pwCurError').textContent = '';
+      page.querySelector('#pwNewError').textContent = '';
+      btnChangePw.textContent = '변경';
+    };
+
+    btnChangePw.addEventListener('click', () => {
+      const open = form.style.display !== 'flex';
+      if (open) {
+        form.style.display = 'flex';
+        btnChangePw.textContent = '닫기';
+        page.querySelector('#adminPwCurrent').focus();
+      } else {
+        closeForm();
+      }
+    });
+
+    // 눈 아이콘 토글
+    const toggleVis = (btnId, inputId) => {
+      const btn = page.querySelector('#' + btnId);
+      const inp = page.querySelector('#' + inputId);
+      if (btn && inp) btn.addEventListener('click', () => {
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+        btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+      });
+    };
+    toggleVis('toggleCur', 'adminPwCurrent');
+    toggleVis('toggleNew', 'adminPwNew');
+    toggleVis('toggleNewConfirm', 'adminPwNewConfirm');
+
+    // 1단계 취소
+    page.querySelector('#btnPwStep1Cancel').addEventListener('click', closeForm);
+
+    // 1단계 확인 - 현재 비밀번호 검증
+    page.querySelector('#btnPwStep1Next').addEventListener('click', async () => {
+      const cur = page.querySelector('#adminPwCurrent').value;
+      const err = page.querySelector('#pwCurError');
+      if (!cur) { err.textContent = '현재 비밀번호를 입력해주세요'; return; }
+      err.textContent = '확인 중...';
+      try {
+        const saved = await getAdminPasswordFromFirebase();
+        if (cur.trim() === String(saved).trim()) {
+          err.textContent = '';
+          step1.style.display = 'none';
+          step2.style.display = 'flex';
+          page.querySelector('#adminPwNew').focus();
+        } else {
+          err.textContent = '비밀번호가 틀렸어요';
+          page.querySelector('#adminPwCurrent').value = '';
+        }
+      } catch(e) {
+        err.textContent = '네트워크 오류';
+      }
+    });
+
+    // 2단계 취소
+    page.querySelector('#btnPwStep2Cancel').addEventListener('click', closeForm);
+
+    // 2단계 저장
+    page.querySelector('#adminPwSave').addEventListener('click', async () => {
+      const val = page.querySelector('#adminPwNew').value.trim();
+      const val2 = page.querySelector('#adminPwNewConfirm').value.trim();
+      const err = page.querySelector('#pwNewError');
+      if (!val || val.length < 4) { err.textContent = '새 비밀번호는 4자 이상이어야 해요'; return; }
+      if (val !== val2) { err.textContent = '새 비밀번호가 일치하지 않아요'; return; }
+      err.textContent = '저장 중...';
+      const ok = await saveAdminPasswordToFirebase(val);
+      if (ok) {
+        closeForm();
+        showToast('🔐 비밀번호가 변경됐어요');
+      } else {
+        err.textContent = '저장 실패 — 네트워크를 확인해주세요';
+      }
+    });
+  }
+
+  // 열람 모드: 로그인
+  const btnLogin = page.querySelector('#btnLogin');
+  if (btnLogin) {
+    // 눈 아이콘
+    const tglLogin = page.querySelector('#toggleLogin');
+    const loginInp = page.querySelector('#adminPwInput');
+    if (tglLogin && loginInp) {
+      tglLogin.addEventListener('click', () => {
+        loginInp.type = loginInp.type === 'password' ? 'text' : 'password';
+        tglLogin.textContent = loginInp.type === 'password' ? '👁' : '🙈';
+      });
+    }
+
+    const doLogin = async () => {
+      const inp = page.querySelector('#adminPwInput');
+      const err = page.querySelector('#loginError');
+      if (!inp || !err) return;
+      const pw = inp.value;
+      if (!pw) { err.textContent = '비밀번호를 입력해주세요'; return; }
+      err.textContent = '확인 중...';
+      try {
+        const saved = await getAdminPasswordFromFirebase();
+        if (!saved) { err.textContent = '비밀번호가 설정되지 않았어요'; return; }
+        if (pw.trim() === String(saved).trim()) {
+          setIsAdmin(true);
+          applyLockState();
+          renderSettings();
+          showToast('🔓 입력 모드로 전환됐어요');
+        } else {
+          err.textContent = '비밀번호가 틀렸어요';
+          inp.value = '';
+          inp.focus();
+        }
+      } catch(e) {
+        err.textContent = '네트워크 오류 — 다시 시도해주세요';
+      }
+    };
+    btnLogin.addEventListener('click', doLogin);
+    if (loginInp) loginInp.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  }
+
+
+  if (USE_FIREBASE) {
+    page.querySelector('#rowSyncUp').addEventListener('click', async () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; }
+      showToast('⬆️ 업로드 중...');
+      const ok = await syncToFirebase();
+      showToast(ok ? '☁️ 업로드 완료!' : '업로드 실패 — 네트워크 확인해주세요');
+    });
+    page.querySelector('#rowSyncDown').addEventListener('click', async () => {
+      showToast('⬇️ 다운로드 중...');
+      const ok = await syncFromFirebase();
+      if (!ok) showToast('이미 최신 데이터예요');
+    });
+  }
+  page.querySelector('#rowImport').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } page.querySelector('#importFile').click(); });
   page.querySelector('#importFile').addEventListener('change', importData);
   page.querySelector('#rowUpdate').addEventListener('click', async () => {
     if ('serviceWorker' in navigator) {
@@ -3789,23 +4218,60 @@ function renderSettings() {
   // 만기 알림 이메일
   (async () => {
     const rec = await DB.get('settings', 'maturityEmail');
-    const inp = page.querySelector('#maturityEmailInput');
-    if (rec && rec.email && inp) inp.value = rec.email;
+    const sub = page.querySelector('#emailDisplaySub');
+    const btn = page.querySelector('#btnEmailChange');
+    if (rec && rec.email) {
+      if (sub) sub.textContent = rec.email;
+      if (btn) btn.textContent = '변경';
+      // 이미 설정됨 → 입력창 닫힌 상태 유지
+    } else {
+      if (sub) sub.textContent = '설정된 이메일 없음';
+      if (btn) btn.textContent = '설정';
+    }
   })();
-  page.querySelector('#maturityEmailSave').addEventListener('click', async () => {
-    const inp = page.querySelector('#maturityEmailInput');
-    const email = inp.value.trim();
-    if (!email || !email.includes('@')) { showToast('올바른 이메일을 입력해주세요'); return; }
-    await DB.put('settings', { key: 'maturityEmail', email });
-    showToast('✅ 이메일이 저장됐어요');
-  });
+
+  // 이메일 설정/변경 버튼 토글
+  const btnEmailChange = page.querySelector('#btnEmailChange');
+  if (btnEmailChange) {
+    const form = page.querySelector('#emailChangeForm');
+    const closeEmailForm = () => {
+      form.style.display = 'none';
+      btnEmailChange.textContent = page.querySelector('#emailDisplaySub').textContent !== '설정된 이메일 없음' ? '변경' : '설정';
+    };
+    btnEmailChange.addEventListener('click', () => {
+      const open = form.style.display !== 'flex';
+      form.style.display = open ? 'flex' : 'none';
+      if (open) {
+        // 기존 이메일 채우기
+        DB.get('settings', 'maturityEmail').then(rec => {
+          if (rec && rec.email) page.querySelector('#maturityEmailInput').value = rec.email;
+        });
+        page.querySelector('#maturityEmailInput').focus();
+        btnEmailChange.textContent = '닫기';
+      } else {
+        closeEmailForm();
+      }
+    });
+    page.querySelector('#btnEmailCancel').addEventListener('click', closeEmailForm);
+    page.querySelector('#maturityEmailSave').addEventListener('click', async () => {
+      const inp = page.querySelector('#maturityEmailInput');
+      const err = page.querySelector('#emailError');
+      const email = inp.value.trim();
+      if (!email || !email.includes('@')) { err.textContent = '올바른 이메일 주소를 입력해주세요'; return; }
+      await DB.put('settings', { key: 'maturityEmail', email });
+      page.querySelector('#emailDisplaySub').textContent = email;
+      closeEmailForm();
+      showToast('✅ 이메일이 저장됐어요');
+    });
+  }
+
   page.querySelector('#rowMaturityCheck').addEventListener('click', async () => {
     showToast('만기 체크 중...');
     const count = await checkMaturityAndNotify(true);
     if (count === 0) showToast('만기 임박 계좌가 없어요');
   });
 
-  page.querySelector('#rowReset').addEventListener('click', resetAllData);
+  page.querySelector('#rowReset').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } resetAllData(); });
 }
 
 /* =========================================================
@@ -4090,10 +4556,6 @@ async function setAutoBackupDirHandle(handle) {
 function isSunday() {
   return new Date().getDay() === 0;
 }
-// 오늘 날짜 문자열 YYYY-MM-DD
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 /* =========================================================
    정기예금 만기 알림 — Gmail MCP via Anthropic API
@@ -4103,7 +4565,7 @@ async function checkMaturityAndNotify(force = false) {
   if (!emailRec || !emailRec.email) return 0;
   const email = emailRec.email;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayStr();
 
   // 오늘 이미 체크했으면 스킵 (force=true면 무조건 실행)
   if (!force) {
@@ -4111,13 +4573,13 @@ async function checkMaturityAndNotify(force = false) {
     if (lastRec && lastRec.date === today) return 0;
   }
 
-  // 만기 7일 후 날짜 계산
-  const d7 = new Date(); d7.setDate(d7.getDate() + 7);
-  const date7 = d7.toISOString().slice(0, 10);
+  // 만기 30일 이내 날짜 계산
+  const d30 = new Date(); d30.setDate(d30.getDate() + 30);
+  const date30 = `${d30.getFullYear()}-${String(d30.getMonth()+1).padStart(2,'0')}-${String(d30.getDate()).padStart(2,'0')}`;
 
-  // 정기예금 계좌 중 만기일이 오늘 또는 7일 이내인 것 찾기
+  // 정기예금 계좌 중 만기일이 오늘 ~ 30일 이내인 것 찾기
   const deposits = (State.linkedAccounts || []).filter(a => a.isDeposit && a.maturityDate);
-  const targets = deposits.filter(a => a.maturityDate === today || a.maturityDate === date7);
+  const targets = deposits.filter(a => a.maturityDate >= today && a.maturityDate <= date30);
 
   if (targets.length === 0) {
     await DB.put('settings', { key: 'maturityLastCheck', date: today });
@@ -4127,7 +4589,8 @@ async function checkMaturityAndNotify(force = false) {
   // 메일 본문 생성
   const appName = State.appName || '교회 회계부';
   const rows = targets.map(a => {
-    const tag = a.maturityDate === today ? '🔴 오늘 만기' : '🟡 7일 후 만기';
+    const daysLeft = Math.round((new Date(a.maturityDate) - new Date(today)) / (1000*60*60*24));
+    const tag = daysLeft === 0 ? '🔴 오늘 만기' : daysLeft <= 7 ? `🟡 ${daysLeft}일 후 만기` : `🟢 ${daysLeft}일 후 만기`;
     const amt = (a.carryover || 0).toLocaleString('ko-KR');
     return `• ${tag} | ${a.name} | ${a.maturityDate} | ${amt}원`;
   }).join('\n');
@@ -4733,11 +5196,11 @@ function generateChurchLedgerWorkbook(months, carryoverByYear) {
   return wb;
 }
 
-let backupMode = 'single'; // 'single' | 'range'
+let backupMode = 'all'; // 'all' | 'single' | 'range'
 
 function openBackupRangeSheet() {
   if (State.transactions.length === 0) { showToast('내보낼 거래가 없어요'); return; }
-  backupMode = 'single';
+  backupMode = 'all';
   renderBackupRangeSheet();
   openSheet('backupRangeSheet');
 }
@@ -4745,6 +5208,7 @@ function openBackupRangeSheet() {
 function renderBackupRangeSheet() {
   const sheet = document.getElementById('backupRangeSheet');
   const months = availableMonthsFromTx();
+  const dateRange = availableDateRangeFromTx();
   const optionHTML = months.map(ym => {
     const [y, m] = ym.split('-');
     return `<option value="${ym}">${y}년 ${Number(m)}월</option>`;
@@ -4758,11 +5222,14 @@ function renderBackupRangeSheet() {
     </div>
     <div class="sheet-body">
       <div class="segctrl">
+        <button data-mode="all"    class="${backupMode==='all'   ?'active':''}">전체 백업</button>
         <button data-mode="single" class="${backupMode==='single'?'active':''}">개별 달</button>
         <button data-mode="range"  class="${backupMode==='range' ?'active':''}">범위 설정</button>
       </div>
 
-      ${backupMode === 'single' ? `
+      ${backupMode === 'all' ? `
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">전체 기간의 모든 거래 데이터와 카테고리/이름 정보가 저장됩니다.</div>
+      ` : backupMode === 'single' ? `
       <div class="formrow">
         <label>백업할 달</label>
         <select class="dateinput" id="bkSingle">${optionHTML}</select>
@@ -4770,14 +5237,16 @@ function renderBackupRangeSheet() {
       <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 달의 거래 데이터와 모든 카테고리/이름 정보가 함께 저장됩니다.</div>
       ` : `
       <div class="formrow">
-        <label>시작 월</label>
-        <select class="dateinput" id="bkStart">${optionHTML}</select>
+        <label>시작일</label>
+        <input type="date" class="dateinput" id="bkStart"
+          ${dateRange ? `min="${dateRange.min}" max="${dateRange.max}"` : ''}>
       </div>
       <div class="formrow">
-        <label>종료 월</label>
-        <select class="dateinput" id="bkEnd">${optionHTML}</select>
+        <label>종료일</label>
+        <input type="date" class="dateinput" id="bkEnd"
+          ${dateRange ? `min="${dateRange.min}" max="${dateRange.max}"` : ''}>
       </div>
-      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 기간의 거래 데이터와 모든 카테고리/이름 정보가 함께 저장됩니다.</div>
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 기간(연-월-일)의 거래 데이터와 모든 카테고리/이름 정보가 함께 저장됩니다.</div>
       `}
 
       <button class="btn-primary" id="bkGo">JSON 백업 파일 만들기</button>
@@ -4787,9 +5256,9 @@ function renderBackupRangeSheet() {
   // 초기값 설정
   if (backupMode === 'single') {
     sheet.querySelector('#bkSingle').value = months[months.length - 1];
-  } else {
-    sheet.querySelector('#bkStart').value = months[0];
-    sheet.querySelector('#bkEnd').value   = months[months.length - 1];
+  } else if (backupMode === 'range' && dateRange) {
+    sheet.querySelector('#bkStart').value = dateRange.min;
+    sheet.querySelector('#bkEnd').value   = dateRange.max;
   }
 
   // 탭 전환
@@ -4802,15 +5271,24 @@ function renderBackupRangeSheet() {
 
   sheet.querySelector('#bkClose').addEventListener('click', closeAllSheets);
   sheet.querySelector('#bkGo').addEventListener('click', () => {
-    let sYm, eYm;
-    if (backupMode === 'single') {
-      sYm = eYm = sheet.querySelector('#bkSingle').value;
-    } else {
-      sYm = sheet.querySelector('#bkStart').value;
-      eYm = sheet.querySelector('#bkEnd').value;
-      if (sYm > eYm) { showToast('시작 월이 종료 월보다 늦어요'); return; }
+    if (backupMode === 'all') {
+      exportData(null, null);
+      closeAllSheets();
+      return;
     }
-    exportData(sYm, eYm);
+    let sDate, eDate;
+    if (backupMode === 'single') {
+      const ym = sheet.querySelector('#bkSingle').value;
+      sDate = `${ym}-01`;
+      const [y, m] = ym.split('-').map(Number);
+      eDate = `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2,'0')}`;
+    } else {
+      sDate = sheet.querySelector('#bkStart').value;
+      eDate = sheet.querySelector('#bkEnd').value;
+      if (!sDate || !eDate) { showToast('시작일과 종료일을 선택해주세요'); return; }
+      if (sDate > eDate) { showToast('시작일이 종료일보다 늦어요'); return; }
+    }
+    exportData(sDate, eDate);
     closeAllSheets();
   });
 }
@@ -4873,22 +5351,24 @@ async function sendBackupByEmail() {
   showToast('📥 JSON 다운로드 완료 — 메일에 첨부해 발송해주세요');
 }
 
-async function exportData(startYm, endYm) {
+async function exportData(startDate, endDate) {
   // 범위 내 거래만 필터 (인수 없으면 전체)
-  const txs = (startYm && endYm)
-    ? State.transactions.filter(t => t.date.slice(0, 7) >= startYm && t.date.slice(0, 7) <= endYm)
+  const txs = (startDate && endDate)
+    ? State.transactions.filter(t => t.date >= startDate && t.date <= endDate)
     : State.transactions;
 
-  const [sy, sm] = startYm ? startYm.split('-') : ['', ''];
-  const [ey, em] = endYm   ? endYm.split('-')   : ['', ''];
-  const rangeLabel = (startYm && endYm && startYm !== endYm)
-    ? `${sy}년${Number(sm)}월-${ey}년${Number(em)}월`
-    : startYm ? `${sy}년${Number(sm)}월` : todayStr();
+  let rangeLabel;
+  if (startDate && endDate) {
+    const fmt = (d) => { const [y, m, dd] = d.split('-'); return `${y}년${Number(m)}월${Number(dd)}일`; };
+    rangeLabel = (startDate === endDate) ? fmt(startDate) : `${fmt(startDate)}-${fmt(endDate)}`;
+  } else {
+    rangeLabel = `전체_${todayStr()}`;
+  }
 
   const data = {
     exportedAt: new Date().toISOString(),
-    rangeStart: startYm || null,
-    rangeEnd:   endYm   || null,
+    rangeStart: startDate || null,
+    rangeEnd:   endDate   || null,
     categories: State.categories,
     persons:    State.persons,
     subItems:   State.subItems,
@@ -5039,6 +5519,14 @@ async function resetAllData() {
 
   // 기본 항목 재생성
   await seedIfEmpty();
+  // 대표계정 강제 생성 (seedIfEmpty 이후에도 없으면)
+  const accts = await DB.getAll('linkedAccounts');
+  if (accts.length === 0) {
+    await DB.put('linkedAccounts', {
+      id: uid(), name: '대표계정', isDefault: true,
+      accountKind: 'normal', carryover: 0, order: 0,
+    });
+  }
   await reloadData();
   renderCurrentPage();
   showToast('✅ 초기화 완료 — 모든 데이터가 삭제됐어요');
@@ -5099,6 +5587,7 @@ function resetTxForm(type) {
 }
 
 function openTxSheet(txId, presetDate, presetType, presetAccountId) {
+  if (!getIsAdmin()) { showPasswordPrompt(() => openTxSheet(txId, presetDate, presetType, presetAccountId)); return; }
   const editing = txId ? State.transactions.find(t => t.id === txId) : null;
   State.editingTx = editing;
 
@@ -5500,7 +5989,7 @@ async function renderTxStepItems(sheet) {
       <div class="formrow">
         <label>세부항목별 금액 입력</label>
         <div id="itemsList" style="display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:2px 8px;">
-          ${items.map(it => `
+          ${items.filter(it => it.isPrimary !== false).map(it => `
             <div class="formrow" style="margin-bottom:4px; min-width:0;">
               <label style="font-weight:700; color:var(--text-1); margin-bottom:3px; display:block; font-size:14px;">${escapeHTML(it.name)}</label>
               <div class="amt-input-wrap item-amt-wrap" style="border-bottom-width:1px; padding-bottom:5px; gap:3px;">
@@ -5510,6 +5999,21 @@ async function renderTxStepItems(sheet) {
             </div>
           `).join('')}
         </div>
+        ${items.filter(it => it.isPrimary === false).length > 0 ? `
+        <div style="margin-top:6px;">
+          <button id="toggleSecondary" style="font-size:12px;color:var(--text-2);background:none;border:none;padding:4px 0;cursor:pointer;">▶ 추가 항목 더보기 (${items.filter(it=>it.isPrimary===false).length}개)</button>
+          <div id="secondaryItems" style="display:none;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:2px 8px;margin-top:4px;">
+            ${items.filter(it => it.isPrimary === false).map(it => `
+              <div class="formrow" style="margin-bottom:4px; min-width:0;">
+                <label style="font-weight:700; color:var(--text-2); margin-bottom:3px; display:block; font-size:13px;">${escapeHTML(it.name)}</label>
+                <div class="amt-input-wrap item-amt-wrap" style="border-bottom-width:1px; padding-bottom:5px; gap:3px;">
+                  <input type="text" inputmode="numeric" class="item-amt-input" data-item="${it.id}" placeholder="0" style="font-size:14px; font-weight:400;" value="${State.formAmounts[it.id] != null ? fmtMoney(State.formAmounts[it.id]) : ''}">
+                  <span class="won" style="font-size:11px;">원</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
         <div style="display:flex; gap:8px; margin-top:4px;">
           <input type="text" class="textinput" id="newSubItemName" placeholder="새 세부항목 추가" style="flex:1;">
           <button class="btn-secondary" id="addSubItemBtn" style="width:auto; padding:0 16px; margin-top:0; color:var(--primary); font-weight:700;">추가</button>
@@ -5593,7 +6097,6 @@ async function renderTxStepItems(sheet) {
   const updateDate = (e) => {
     if (e.target.value && e.target.value !== State.formDate) {
       State.formDate = e.target.value;
-      // 전체 리렌더 없이 날짜 텍스트만 갱신
       const label = sheet.querySelector('#txDateLabel');
       if (label) label.textContent = dayLabel(State.formDate);
       dateInput.value = State.formDate;
@@ -5601,9 +6104,37 @@ async function renderTxStepItems(sheet) {
   };
   dateInput.addEventListener('change', updateDate);
   dateInput.addEventListener('input', updateDate);
-  sheet.querySelector('#txDateLabel')?.addEventListener('click', () => dateInput.showPicker?.() || dateInput.click());
-  // 날짜 레이블 클릭 시 input 열기
-  sheet.querySelector('#txDateLabel')?.addEventListener('click', () => dateInput.showPicker?.() || dateInput.click());
+
+  // 날짜 레이블 클릭 → 날짜 선택 팝업
+  sheet.querySelector('#txDateLabel')?.addEventListener('click', () => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;';
+    const cur = State.formDate || todayStr();
+    overlay.innerHTML = `
+      <div style="background:var(--card);border-radius:20px 20px 0 0;padding:20px 20px 40px;width:100%;max-width:480px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <span style="font-size:15px;font-weight:700;">날짜 선택</span>
+          <button id="datePickClose" style="font-size:20px;background:none;border:none;color:var(--text-2);">✕</button>
+        </div>
+        <input type="date" id="datePickInput" value="${cur}"
+          style="width:100%;padding:12px;font-size:17px;border:1.5px solid var(--border);border-radius:12px;box-sizing:border-box;background:var(--surface-1);color:var(--text-1);">
+        <button id="datePickConfirm" style="width:100%;margin-top:14px;padding:14px;background:var(--primary);color:#fff;font-size:16px;font-weight:700;border:none;border-radius:14px;">확인</button>
+      </div>`;
+    document.body.appendChild(overlay);
+    const inp = overlay.querySelector('#datePickInput');
+    setTimeout(() => inp.focus(), 100);
+    overlay.querySelector('#datePickClose').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#datePickConfirm').addEventListener('click', () => {
+      if (inp.value) {
+        State.formDate = inp.value;
+        const label = sheet.querySelector('#txDateLabel');
+        if (label) label.textContent = dayLabel(State.formDate);
+        if (dateInput) dateInput.value = State.formDate;
+      }
+      overlay.remove();
+    });
+  });
   const backBtn = sheet.querySelector('#txBack');
   if (backBtn) {
     backBtn.addEventListener('click', () => {
@@ -5611,6 +6142,26 @@ async function renderTxStepItems(sheet) {
       State.formStep = State.formSubGroupId ? 'pickGroup' : 'pick';
       renderTxSheet();
     });
+  }
+
+  // 추가 항목 더보기 토글
+  const toggleBtn = sheet.querySelector('#toggleSecondary');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const sec = sheet.querySelector('#secondaryItems');
+      const open = sec.style.display !== 'grid';
+      sec.style.display = open ? 'grid' : 'none';
+      toggleBtn.textContent = open
+        ? `▼ 추가 항목 접기`
+        : `▶ 추가 항목 더보기 (${sec.querySelectorAll('.item-amt-input').length}개)`;
+      // 금액 입력된 항목이 있으면 자동 펼침
+    });
+    // 이미 값 입력된 secondary 항목 있으면 자동 펼침
+    const hasFilled = items.filter(it => it.isPrimary === false).some(it => State.formAmounts[it.id]);
+    if (hasFilled) {
+      sheet.querySelector('#secondaryItems').style.display = 'grid';
+      toggleBtn.textContent = '▼ 추가 항목 접기';
+    }
   }
 
   sheet.querySelectorAll('.item-amt-input').forEach(input => {
@@ -5681,6 +6232,7 @@ async function saveTx() {
   closeTxSheet();
   renderCurrentPage();
   showToast(State.editingTx ? '수정되었습니다' : '저장되었습니다');
+  if (USE_FIREBASE) syncToFirebase().catch(e => console.error('sync error:', e));
 }
 
 async function deleteTx() {
@@ -5690,6 +6242,7 @@ async function deleteTx() {
   closeTxSheet();
   renderCurrentPage();
   showToast('삭제되었습니다');
+  if (USE_FIREBASE) syncToFirebase().catch(e => console.error('sync error:', e));
 }
 
 /* =========================================================
@@ -5755,7 +6308,7 @@ function renderDayDetail(dateStr) {
     <div class="sheet-handle"></div>
     <div class="sheet-head">
       <button id="ddClose" class="sheet-close-btn">${ICONS.close}닫기</button>
-      <h3>${dayLabel(dateStr)}</h3>
+      <button id="ddDateLabel" style="font-size:17px;font-weight:700;background:none;border:none;border-bottom:1.5px dashed var(--primary);color:var(--text-1);padding:2px 4px;cursor:pointer;">${dayLabel(dateStr)}</button>
       <button class="sheet-close-btn" style="visibility:hidden;">${ICONS.close}닫기</button>
     </div>
     <div class="sheet-body">
@@ -5778,6 +6331,51 @@ function renderDayDetail(dateStr) {
   `;
 
   sheet.querySelector('#ddClose').addEventListener('click', closeAllSheets);
+
+  // 날짜 버튼 탭 → 인라인 미니 달력
+  sheet.querySelector('#ddDateLabel').addEventListener('click', () => {
+    const existing = document.getElementById('ddCalPop');
+    if (existing) { existing.remove(); return; }
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const pop = document.createElement('div');
+    pop.id = 'ddCalPop';
+    pop.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+
+    const renderCal = (cy, cm) => {
+      const first = new Date(cy, cm - 1, 1).getDay();
+      const days = new Date(cy, cm, 0).getDate();
+      let cells = '';
+      for (let i = 0; i < first; i++) cells += `<div></div>`;
+      for (let i = 1; i <= days; i++) {
+        const ds = `${cy}-${String(cm).padStart(2,'0')}-${String(i).padStart(2,'0')}`;
+        const isToday = ds === todayStr();
+        const isSel = ds === dateStr;
+        cells += `<button data-date="${ds}" style="padding:6px 0;border:none;border-radius:50%;width:34px;height:34px;font-size:14px;font-weight:${isSel?'800':'400'};background:${isSel?'var(--primary)':isToday?'var(--surface-2)':'none'};color:${isSel?'#fff':'var(--text-1)'};cursor:pointer;">${i}</button>`;
+      }
+      pop.innerHTML = `
+        <div style="background:var(--card);border-radius:20px;padding:16px;width:320px;max-width:90vw;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <button id="calPrev" style="font-size:20px;background:none;border:none;padding:4px 10px;color:var(--text-1);">‹</button>
+            <span style="font-weight:700;font-size:15px;">${cy}년 ${cm}월</span>
+            <button id="calNext" style="font-size:20px;background:none;border:none;padding:4px 10px;color:var(--text-1);">›</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;margin-bottom:6px;">
+            ${['일','월','화','수','목','금','토'].map(x=>`<div style="font-size:11px;color:var(--text-2);padding:4px 0;">${x}</div>`).join('')}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;">
+            ${cells}
+          </div>
+        </div>`;
+      pop.querySelector('#calPrev').addEventListener('click', () => { cm--; if(cm<1){cm=12;cy--;} renderCal(cy,cm); });
+      pop.querySelector('#calNext').addEventListener('click', () => { cm++; if(cm>12){cm=1;cy++;} renderCal(cy,cm); });
+      pop.querySelectorAll('[data-date]').forEach(btn => {
+        btn.addEventListener('click', () => { pop.remove(); openDayDetail(btn.dataset.date); });
+      });
+      pop.onclick = e => { if (e.target === pop) pop.remove(); };
+    };
+    renderCal(y, m);
+    document.body.appendChild(pop);
+  });
 
   // 계정선택 토글 — 변경 시 목록 즉시 갱신
   if (accounts.length > 0) {
@@ -6201,7 +6799,7 @@ function renderLinkedAccountsSheet() {
   const sheet = document.getElementById('linkedAccountsSheet');
   const accounts = State.linkedAccounts || [];
 
-  const normalAccts  = accounts.filter(a => !a.isDefault && (!a.accountKind || a.accountKind === 'normal'));
+  const normalAccts  = accounts.filter(a => a.isDefault || (!a.isDefault && (!a.accountKind || a.accountKind === 'normal')));
   const depositAccts = accounts.filter(a => !a.isDefault && a.accountKind === 'deposit');
 
   const normalListHTML = normalAccts.length === 0
@@ -6239,7 +6837,7 @@ function renderLinkedAccountsSheet() {
   sheet.querySelector('#laClose').addEventListener('click', () => closeSheet('linkedAccountsSheet'));
 
   sheet.querySelectorAll('.la-add-small').forEach(btn => {
-    btn.addEventListener('click', () => openLinkedAccountEditSheet(null, btn.dataset.kind));
+    btn.addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openLinkedAccountEditSheet(null, btn.dataset.kind); });
   });
 
   sheet.querySelectorAll('.la-item').forEach(el => {
@@ -6279,7 +6877,12 @@ function openLinkedAccountEditSheet(acct, kind) {
   const isNew = !acct;
   const accountKind = isNew ? (kind || 'normal') : (acct.accountKind || 'normal');
   const sheet = document.getElementById('linkedAccountsSheet');
-  const isDefault = !isNew && !!acct.isDefault;
+  // 신규 일반계좌 기본값: 대표계정 이름 + isDefault on
+  // (단, 이미 대표계정이 있으면 isDefault off)
+  const existingDefault = (State.linkedAccounts||[]).find(a => a.isDefault);
+  const newIsDefault = isNew && accountKind === 'normal' && !existingDefault;
+  const isDefault = isNew ? newIsDefault : !!acct.isDefault;
+  const defaultName = isNew && accountKind === 'normal' && !existingDefault ? '대표계정' : '';
 
   // 정기예금 프리셋 이름
   const depositPresets = ['정기선교', '정기건축', '정기후대', '정기퇴직'];
@@ -6306,7 +6909,7 @@ function openLinkedAccountEditSheet(acct, kind) {
       <div class="form-field" style="margin-top:${isNew && accountKind==='deposit'?'12px':'0'};">
         <label class="form-label">계좌 이름</label>
         <input id="laeNameInput" class="form-input" type="text" placeholder="${accountKind==='deposit'?'예: 정기선교, 정기건축':'예: 재정계정, 선교계정'}" maxlength="20"
-          value="${isNew ? '' : escapeHTML(acct.name)}">
+          value="${isNew ? defaultName : escapeHTML(acct.name)}">
       </div>
       <div class="form-field" style="margin-top:16px;">
         <label class="form-label">이월금액 (원)</label>
@@ -6422,8 +7025,11 @@ function renderCatTree(sheet) {
   function subRowHTML(s, catId) {
     return `<div class="cattree-leaf" style="${s.hidden?'opacity:0.45;':''}display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:5px 0 5px 40px;border-bottom:1px solid var(--border);">
       <span style="flex:1;font-size:13px;">${s.hidden?'🚫 ':''}${escapeHTML(s.name)}</span>
+      <label style="display:flex;align-items:center;gap:3px;font-size:12px;color:var(--primary);cursor:pointer;white-space:nowrap;font-weight:600;">
+        <input type="checkbox" data-primary-id="${s.id}" ${s.isPrimary!==false?'checked':''} style="width:16px;height:16px;accent-color:var(--primary);">기본
+      </label>
       <div style="display:flex;align-items:center;gap:3px;">
-        <input type="text" inputmode="numeric" data-budget-id="${s.id}" data-cat-id="${catId}" value="${s.budget?fmtMoney(s.budget):''}" placeholder="연간예산" style="width:80px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;">
+        <input type="text" inputmode="numeric" data-budget-id="${s.id}" data-cat-id="${catId}" value="${s.budget?fmtMoney(s.budget):''}" placeholder="연간예산" style="width:70px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;">
         <span style="font-size:11px;color:var(--text-3);">원</span>
       </div>
       <button class="grip" data-rename-sub="${s.id}">${ICONS.edit}</button>
@@ -6657,6 +7263,18 @@ function renderCatTree(sheet) {
       if (e.key !== 'Enter') return;
       const catId = input.dataset.addGroupCat;
       sheet.querySelector(`[data-add-group-btn="${catId}"]`)?.click();
+    });
+  });
+
+  // 소분류 기본/일반 체크박스
+  sheet.querySelectorAll('[data-primary-id]').forEach(chk => {
+    chk.addEventListener('change', async () => {
+      const item = await DB.get('subItems', chk.dataset.primaryId);
+      if (!item) return;
+      item.isPrimary = chk.checked;
+      await DB.put('subItems', item);
+      await reloadData();
+      showToast(chk.checked ? '기본 항목으로 설정됐어요' : '일반 항목으로 설정됐어요');
     });
   });
 
@@ -7314,8 +7932,12 @@ function renderCatSubSheet(categoryId, mode) {
           <div class="catrow" data-id="${item.id}" style="flex-wrap:wrap;gap:4px;">
             ${!isItems ? `<div class="ic" style="background:${hexToLight(cat.color)};font-size:16px;">👤</div>` : ''}
             <div class="nm" style="${isItems?'margin-left:2px;':''}flex:1;">${escapeHTML(item.name)}</div>
-            ${isItems ? `<div style="display:flex;align-items:center;gap:4px;font-size:12px;">
-              <input type="text" inputmode="numeric" data-budget-id="${item.id}" value="${item.budget ? fmtMoney(item.budget) : ''}" placeholder="연간예산" style="width:90px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;">
+            ${isItems ? `<div style="display:flex;align-items:center;gap:6px;font-size:12px;">
+              <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-2);cursor:pointer;">
+                <input type="checkbox" data-primary-id="${item.id}" ${item.isPrimary!==false?'checked':''} style="width:15px;height:15px;cursor:pointer;">
+                기본
+              </label>
+              <input type="text" inputmode="numeric" data-budget-id="${item.id}" value="${item.budget ? fmtMoney(item.budget) : ''}" placeholder="연간예산" style="width:80px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;">
               <span style="color:var(--text-3);">원</span>
             </div>` : ''}
             <button class="grip" data-rename="${item.id}">${ICONS.edit}</button>
@@ -7360,6 +7982,20 @@ function renderCatSubSheet(categoryId, mode) {
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { input.blur(); } });
     });
   }
+  // isPrimary 체크박스 이벤트
+  if (isItems) {
+    sheet.querySelectorAll('[data-primary-id]').forEach(chk => {
+      chk.addEventListener('change', async () => {
+        const item = list.find(x => x.id === chk.dataset.primaryId);
+        if (!item) return;
+        item.isPrimary = chk.checked;
+        await DB.put('subItems', item);
+        await reloadData();
+        showToast(chk.checked ? '기본 항목으로 설정됐어요' : '일반 항목으로 설정됐어요');
+      });
+    });
+  }
+
   sheet.querySelector('#subBack').addEventListener('click', () => { closeAllSheets(); openCatEditSheet(categoryId); });
 
   sheet.querySelectorAll('[data-rename]').forEach(b => {
@@ -7423,9 +8059,10 @@ async function initApp() {
   await reloadData();
   renderShell();
   switchTab('home');
-  // 앱 시작 시 자동 백업 체크 (일요일이면 실행)
-  setTimeout(checkAndRunAutoBackup, 2000);
-  setTimeout(() => checkMaturityAndNotify(false), 3000);
+  // Firebase 관련은 렌더링 후 백그라운드 실행 (초기 로딩 속도 영향 없도록)
+  setTimeout(async () => { await restoreAdminState(); applyLockState(); renderTabbar(); }, 500);
+  setTimeout(() => checkMaturityAndNotify(false), 5000);
+  if (USE_FIREBASE) setTimeout(async () => { await syncFromFirebase(); }, 3000);
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

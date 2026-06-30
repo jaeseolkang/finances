@@ -1,4 +1,4 @@
-// 2026-06-30 KST | CACHE_NAME v2003 (달력 전체거래 표시 + 죽은 항목 자동복구)
+// 2026-07-01 KST | CACHE_NAME v2003 (통계 탭에 리스트 추가: 설정 월장부 이동)
 'use strict';
 const CACHE_NAME = 'gaegyebu-v2003';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];

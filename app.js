@@ -5,7 +5,7 @@
 // 🔧 배포 설정 스위치
 // church-finances 저장소: true / finances 저장소: false
 // ============================================================
-const USE_FIREBASE = false;
+const USE_FIREBASE = true;
 
 
 
@@ -658,6 +658,109 @@ async function migrateSubGroupsFromSubItems() {
   if (count > 0) console.log(`[migration] subGroups 처리: ${count}개`);
 }
 
+/* =========================================================
+   MIGRATION: 죽은(고아) 참조 데이터 복구
+   거래(transactions)가 가리키는 categoryId / subGroupId / subItemId / personId가
+   실제 스토어에 존재하지 않는 경우("죽은 데이터"), 화면에는 "삭제된 항목"으로만
+   보이고 앱에서 수정할 수 없었음. 이를 막기 위해 같은 type(수입/지출) 안에서
+   고아 참조가 처음 발견될 때마다 실제 항목(카테고리/중분류/소분류/인물)을
+   하나씩 만들어 연결해 둔다. 이렇게 만들어진 항목은 평범한 데이터이므로
+   분류 관리 화면에서 이름 변경/이동/삭제가 모두 가능해진다. (멱등성 보장)
+   ========================================================= */
+async function migrateDeadLinks() {
+  const [cats, subGroups, subItems, persons, txs] = await Promise.all([
+    DB.getAll('categories'), DB.getAll('subGroups'), DB.getAll('subItems'),
+    DB.getAll('persons'), DB.getAll('transactions')
+  ]);
+  const catMap = new Map(cats.map(c => [c.id, c]));
+  const subGroupSet = new Set(subGroups.map(g => g.id));
+  const subItemSet = new Set(subItems.map(s => s.id));
+  const personSet = new Set(persons.map(p => p.id));
+
+  // 타입(수입/지출)별로 새로 만든 "미분류 항목" 카테고리를 재사용
+  const newCatByType = {};   // type -> category record
+  const newGroupByCat = {};  // categoryId -> subGroup record
+  const newItemByCat = {};   // categoryId -> subItem record
+  let newPersonByCat = {};  // categoryId -> person record
+  let changed = 0;
+  let txChanged = 0;
+
+  const ensureCategory = (type) => {
+    if (newCatByType[type]) return newCatByType[type];
+    const rec = {
+      id: uid(), name: '미분류 항목', type, icon: '❓', color: '#9CA3AF',
+      budget: 0, order: (cats.filter(c => c.type === type).length || 0) + 100
+    };
+    newCatByType[type] = rec;
+    return rec;
+  };
+  const ensureSubGroup = (categoryId) => {
+    if (newGroupByCat[categoryId]) return newGroupByCat[categoryId];
+    const rec = { id: uid(), categoryId, name: '미분류', order: 0 };
+    newGroupByCat[categoryId] = rec;
+    return rec;
+  };
+  const ensureSubItem = (categoryId) => {
+    if (newItemByCat[categoryId]) return newItemByCat[categoryId];
+    const group = ensureSubGroup(categoryId);
+    const rec = { id: uid(), categoryId, subGroupId: group.id, name: '미분류', order: 0 };
+    newItemByCat[categoryId] = rec;
+    return rec;
+  };
+  const ensurePerson = (categoryId) => {
+    if (newPersonByCat[categoryId]) return newPersonByCat[categoryId];
+    const rec = { id: uid(), categoryId, name: '미분류 인물', order: 0 };
+    newPersonByCat[categoryId] = rec;
+    return rec;
+  };
+
+  for (const t of txs) {
+    let touched = false;
+
+    // categoryId 고아 → 새 카테고리로 교체
+    if (t.categoryId && !catMap.has(t.categoryId)) {
+      const cat = ensureCategory(t.type === 'income' ? 'income' : 'expense');
+      t.categoryId = cat.id;
+      touched = true;
+    }
+    const liveCategoryId = t.categoryId;
+
+    // subGroupId 고아 → 새 중분류로 교체
+    if (t.subGroupId && !subGroupSet.has(t.subGroupId)) {
+      const group = ensureSubGroup(liveCategoryId);
+      t.subGroupId = group.id;
+      touched = true;
+    }
+
+    // personId 고아 → 새 인물로 교체
+    if (t.personId && !personSet.has(t.personId)) {
+      const p = ensurePerson(liveCategoryId);
+      t.personId = p.id;
+      touched = true;
+    }
+
+    // lines[].subItemId 고아 → 새 소항목으로 교체
+    if (Array.isArray(t.lines)) {
+      for (const l of t.lines) {
+        if (l.subItemId && !subItemSet.has(l.subItemId)) {
+          const item = ensureSubItem(liveCategoryId);
+          l.subItemId = item.id;
+          touched = true;
+        }
+      }
+    }
+
+    if (touched) { await DB.put('transactions', t); txChanged++; }
+  }
+
+  for (const rec of Object.values(newCatByType)) { await DB.put('categories', rec); changed++; }
+  for (const rec of Object.values(newGroupByCat)) { await DB.put('subGroups', rec); changed++; }
+  for (const rec of Object.values(newItemByCat)) { await DB.put('subItems', rec); changed++; }
+  for (const rec of Object.values(newPersonByCat)) { await DB.put('persons', rec); changed++; }
+
+  if (changed > 0) console.log(`[migration] 죽은 참조 복구: 새 항목 ${changed}개, 거래 ${txChanged}건 재연결`);
+}
+
 async function reloadData() {
   const [cats, persons, subItems, subGroups, txs, linkedAccounts] = await Promise.all([
     DB.getAll('categories'), DB.getAll('persons'), DB.getAll('subItems'),
@@ -739,7 +842,7 @@ function txInCursorMonth() {
 }
 
 function monthSummary() {
-  const list = txInCursorMonth();
+  const list = txAllInCursorMonth();
   const carryoverCat = State.categories.find(c => c.name === '전년이월');
   const depositCat = State.categories.find(c => c.type === 'expense' && c.name === '예금');
   let income = 0, expense = 0, deposit = 0;
@@ -1004,12 +1107,18 @@ function changeMonth(delta) {
    ========================================================= */
 function dayTotalsMap() {
   // { 'YYYY-MM-DD': { income, expense } }
+  // 달력에는 계좌 구분 없이 '모든' 거래를 표시한다 (대표계좌 거래만 보이던 문제 수정)
   const map = {};
-  for (const t of txInCursorMonth()) {
+  for (const t of txAllInCursorMonth()) {
     if (!map[t.date]) map[t.date] = { income: 0, expense: 0 };
     map[t.date][t.type] += t.amount;
   }
   return map;
+}
+
+// 계좌 구분 없이 현재 커서 월의 모든 거래 반환 (달력 점 표시용)
+function txAllInCursorMonth() {
+  return State.transactions.filter(t => isSameMonth(t.date, State.cursorDate));
 }
 
 function buildCalendarCells(cursorDate) {
@@ -1278,7 +1387,7 @@ function renderHomeCalendar() {
 }
 
 function renderHomeDaily() {
-  const list = txInCursorMonth();
+  const list = txAllInCursorMonth();
   const groups = {};
   for (const t of list) {
     (groups[t.date] = groups[t.date] || []).push(t);
@@ -5782,7 +5891,8 @@ function openTxSheet(txId, presetDate, presetType, presetAccountId) {
   } else {
     resetTxForm(presetType || 'expense');
     if (presetDate) State.formDate = presetDate;
-    State.formAccountId = presetAccountId || State.selectedAccountId || null;
+    const fallbackAcctId = State.selectedAccountId === '__all__' ? null : State.selectedAccountId;
+    State.formAccountId = presetAccountId || fallbackAcctId || null;
   }
 
   renderTxSheet();
@@ -6426,6 +6536,8 @@ function dayLabel(dateStr) {
 
 function openDayDetail(dateStr) {
   State.dayDetailDate = dateStr;
+  // 달력에서 들어올 때는 항상 '전체' 계좌 보기로 시작 (모든 거래가 보이도록)
+  State.selectedAccountId = '__all__';
   renderDayDetail(dateStr);
   openSheet('dayDetailSheet');
 }
@@ -6436,19 +6548,22 @@ function renderDayDetail(dateStr) {
   // 계좌 목록 및 현재 선택 계좌 결정
   const accounts = State.linkedAccounts || [];
   const defaultAcct = accounts.find(a => a.isDefault) || accounts[0] || null;
-  // selectedAccountId가 유효한 계좌가 아닐 때만 대표계정으로 초기화
-  if (!State.selectedAccountId || !accounts.find(a => a.id === State.selectedAccountId)) {
-    State.selectedAccountId = defaultAcct ? defaultAcct.id : null;
+  // selectedAccountId가 '전체'(__all__)이거나 유효한 계좌일 때만 유지, 그 외엔 '전체'로 초기화
+  const isAllView = State.selectedAccountId === '__all__';
+  if (!isAllView && (!State.selectedAccountId || !accounts.find(a => a.id === State.selectedAccountId))) {
+    State.selectedAccountId = '__all__';
   }
-  const selAcct = accounts.find(a => a.id === State.selectedAccountId) || defaultAcct || null;
+  const selAcct = isAllView ? null : (accounts.find(a => a.id === State.selectedAccountId) || defaultAcct || null);
 
   // 선택된 계좌에 해당하는 거래만 필터링
+  // '전체': 계좌 구분 없이 해당 날짜의 모든 거래
   // 대표계정(재정계정): accountId가 null이거나 대표계정 id인 거래
   // 다른 계정: accountId가 해당 계정 id인 거래
   const isDefault = selAcct && selAcct.isDefault;
   const list = State.transactions
     .filter(t => {
       if (t.date !== dateStr) return false;
+      if (isAllView) return true;
       if (isDefault) return !t.accountId || t.accountId === selAcct.id;
       return t.accountId === (selAcct ? selAcct.id : null);
     })
@@ -6460,7 +6575,7 @@ function renderDayDetail(dateStr) {
   let income = 0, expense = 0;
   for (const t of list) { if (t.type === 'income') income += t.amount; else expense += t.amount; }
 
-  const acctLabel = selAcct ? selAcct.name : '계좌 없음';
+  const acctLabel = isAllView ? '전체' : (selAcct ? selAcct.name : '계좌 없음');
 
   const acctSelectorHTML = accounts.length === 0
     ? `<div class="acct-empty">설정 &gt; 연결계좌 관리에서 계좌를 먼저 추가해주세요</div>`
@@ -6470,7 +6585,8 @@ function renderDayDetail(dateStr) {
           <span class="acct-arrow">▼</span>
         </div>
         <div class="acct-list" id="ddAcctList">
-          ${accounts.map(a => `<div class="acct-item${selAcct&&a.id===selAcct.id?' active':''}" data-id="${a.id}">${escapeHTML(a.name)}</div>`).join('')}
+          <div class="acct-item${isAllView?' active':''}" data-id="__all__">전체</div>
+          ${accounts.map(a => `<div class="acct-item${!isAllView&&selAcct&&a.id===selAcct.id?' active':''}" data-id="${a.id}">${escapeHTML(a.name)}</div>`).join('')}
         </div>
       </div>`;
 
@@ -6564,8 +6680,9 @@ function renderDayDetail(dateStr) {
     });
   }
 
-  sheet.querySelector('#ddAddIncome').addEventListener('click', () => openTxSheet(null, dateStr, 'income', State.selectedAccountId));
-  sheet.querySelector('#ddAddExpense').addEventListener('click', () => openTxSheet(null, dateStr, 'expense', State.selectedAccountId));
+  const addAcctId = isAllView ? (defaultAcct ? defaultAcct.id : null) : State.selectedAccountId;
+  sheet.querySelector('#ddAddIncome').addEventListener('click', () => openTxSheet(null, dateStr, 'income', addAcctId));
+  sheet.querySelector('#ddAddExpense').addEventListener('click', () => openTxSheet(null, dateStr, 'expense', addAcctId));
   sheet.querySelectorAll('.tx-item').forEach(el => {
     el.addEventListener('click', () => openTxSheet(el.dataset.id, dateStr));
   });
@@ -8226,6 +8343,7 @@ async function initApp() {
   await seedIfEmpty();
   await migratePersonsToSubGroups();
   await migrateSubGroupsFromSubItems();
+  await migrateDeadLinks();
   await reloadData();
   renderShell();
   switchTab('home');

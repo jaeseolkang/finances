@@ -1,6 +1,6 @@
-// 2026-07-01 KST | CACHE_NAME v2010 (이자 탭 요약을 이자금액/합계로 축소, 계정 정렬 확인)
+// 2026-07-01 KST | CACHE_NAME v2011 (통계-리스트 및 인쇄 모드에 '맨 위로' 버튼 추가)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2010';
+const CACHE_NAME = 'gaegyebu-v2011';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

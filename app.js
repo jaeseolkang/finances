@@ -857,6 +857,7 @@ const ICONS = {
   chevR: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>`,
   upload: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/></svg>`,
+  arrowUp: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>`,
 };
 
 const TABS = [
@@ -950,11 +951,30 @@ function _doPrintBlob(html) {
       }
       /* 화면에서는 페이지 구분 없이 연속 표시 */
       .print-page{display:block;margin-bottom:24px;}
-      @media print{#print-btn{display:none!important;}}
+      #print-scrolltop{
+        display:none;position:fixed;right:18px;bottom:24px;
+        width:48px;height:48px;border-radius:50%;
+        background:#fff;color:#1d4ed8;border:1.5px solid #1d4ed8;
+        box-shadow:0 6px 16px rgba(0,0,0,0.2);
+        font-size:20px;font-weight:800;cursor:pointer;
+        align-items:center;justify-content:center;
+      }
+      #print-scrolltop.show{display:flex;}
+      @media print{#print-btn{display:none!important;}#print-scrolltop{display:none!important;}}
     </style>
   </head><body>
     <button id="print-btn" onclick="window.print()">🖨️ 인쇄</button>
     ${html}
+    <button id="print-scrolltop" title="맨 위로" onclick="window.scrollTo({top:0,behavior:'smooth'})">▲</button>
+    <script>
+      (function(){
+        var btn = document.getElementById('print-scrolltop');
+        window.addEventListener('scroll', function(){
+          if (window.scrollY > 300) btn.classList.add('show');
+          else btn.classList.remove('show');
+        });
+      })();
+    </script>
   </body></html>`;
 
   const blob = new Blob([fullHTML], {type:'text/html'});
@@ -978,6 +998,7 @@ function renderShell() {
       <div class="page" id="page-settings"></div>
     </div>
     <button class="fab" id="fabAdd">${ICONS.plus}</button>
+    <button class="fab-top" id="fabScrollTop" title="맨 위로">${ICONS.arrowUp}</button>
     <div class="tabbar" id="tabbar"></div>
     <div class="sheet-backdrop" id="sheetBackdrop"></div>
     <div class="sheet" id="txSheet"></div>
@@ -996,6 +1017,29 @@ function renderShell() {
   renderTabbar();
   document.getElementById('fabAdd').addEventListener('click', () => openDayDetail(todayStr()));
   document.getElementById('sheetBackdrop').addEventListener('click', closeAllSheets);
+  initScrollTopBtn();
+}
+
+// ── 통계 [리스트] 처럼 내용이 길어질 때 쓰는 '맨 위로' 버튼 ──
+// (+ 버튼 바로 위에 스택되어 표시됨. 탭바에 가려지지 않도록 위쪽에 배치)
+function initScrollTopBtn() {
+  const btn = document.getElementById('fabScrollTop');
+  if (!btn) return;
+  const check = () => {
+    const activePage = document.querySelector('.page.active');
+    const isStatsList = State.tab === 'stats' && State.statsType === 'list';
+    if (isStatsList && activePage && activePage.scrollTop > 200) {
+      btn.classList.add('show');
+    } else {
+      btn.classList.remove('show');
+    }
+  };
+  document.getElementById('pages').addEventListener('scroll', check, true);
+  btn.addEventListener('click', () => {
+    const activePage = document.querySelector('.page.active');
+    if (activePage) activePage.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  window._checkScrollTopBtn = check;
 }
 
 function renderTabbar() {
@@ -1022,6 +1066,7 @@ function switchTab(key) {
   const isAdmin = getIsAdmin();
   document.getElementById('fabAdd').style.display = (key === 'settings' || key === 'members' || key === 'accounts' || !isAdmin) ? 'none' : 'flex';
   applyLockState();
+  window._checkScrollTopBtn?.();
 }
 
 function renderCurrentPage() {
@@ -3280,6 +3325,8 @@ function renderStats() {
       renderStats();
     });
   });
+
+  window._checkScrollTopBtn?.();
 }
 
 // [통계] 탭: 막대 차트형 요약 (수입=개인별 헌금 합계 / 지출=대분류별 합계)

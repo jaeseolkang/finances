@@ -452,6 +452,7 @@ const State = {
   dayDetailDate: null, // 현재 열려있는 '일별 상세' 시트의 날짜 (null이면 닫힌 상태)
   catStatDetailId: null, // 현재 열려있는 '통계 항목 상세' 시트의 categoryId (null이면 닫힌 상태)
   subStatDetailKey: null, // 현재 열려있는 '내용 탭 집계 상세' 시트의 key (null이면 닫힌 상태)
+  interestDetailKey: null, // 현재 열려있는 '이자 탭 계정 상세' 시트의 key (null이면 닫힌 상태)
   statsSortKey: 'amount',   // '내용' 탭 정렬 기준: 'label' | 'count' | 'amount'
   statsSortDir: 'desc',     // 'asc' | 'desc'
   budgetExpanded: {},       // { [catId]: true/false, [catId+'__'+groupName]: true/false }
@@ -3057,9 +3058,10 @@ function renderStats() {
   const page = document.getElementById('page-stats');
   const range = statsPeriodRange();
   const allTx  = txInPeriod(range.start, range.end);
-  const list   = allTx.filter(t => t.type === State.statsType);
-  const isIncome = State.statsType === 'income';
-  const isList   = State.statsType === 'list';
+  const isIncome   = State.statsType === 'income';
+  const isList     = State.statsType === 'list';
+  const isInterest = State.statsType === 'interest';
+  const list   = (isList || isInterest) ? [] : allTx.filter(t => t.type === State.statsType);
 
   // 기간별 내역 (날짜순)
   const detailTx = list.slice().sort((a,b) => a.date.localeCompare(b.date) || b.createdAt - a.createdAt);
@@ -3074,7 +3076,7 @@ function renderStats() {
   // 지출: 대분류 기준 집계
   let statRows = [];
   let statTotal = 0;
-  {
+  if (!isInterest) {
     const byCat = {};
     for (const t of list) {
       byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount;
@@ -3091,14 +3093,15 @@ function renderStats() {
   page.innerHTML = `
     <div class="appbar" style="padding-left:0;padding-right:0;">
       <h1>통계</h1>
+      ${!isInterest ? `
       <div style="display:flex;gap:6px;">
         <button id="statsExcel" style="font-size:13px;color:#217346;font-weight:700;display:flex;align-items:center;gap:4px;padding:6px 10px;border-radius:8px;background:#E8F5E9;">📥 엑셀</button>
         <button id="statsPrint" style="font-size:13px;color:var(--primary);font-weight:700;display:flex;align-items:center;gap:4px;padding:6px 10px;border-radius:8px;background:var(--primary-light);">🖨️ 인쇄</button>
-      </div>
+      </div>` : ''}
     </div>
 
     <!-- 통계 | 내용 -->
-    ${!isList ? `
+    ${(!isList && !isInterest) ? `
     <div class="segctrl" id="viewToggle" style="margin-bottom:12px;">
       <button data-view="stats"  class="${State.statsView==='stats' ?'active':''}">통계</button>
       <button data-view="detail" class="${State.statsView==='detail'?'active':''}">내용</button>
@@ -3131,11 +3134,12 @@ function renderStats() {
       </div>
     ` : ''}
 
-    <!-- 수입/지출/리스트 토글 -->
+    <!-- 수입/지출/이자/리스트 토글 -->
     <div class="segctrl" id="typeToggle" style="margin-bottom:14px;">
-      <button data-type="expense" class="${State.statsType==='expense'?'active':''}">지출</button>
-      <button data-type="income"  class="${State.statsType==='income' ?'active':''}">수입</button>
-      <button data-type="list"    class="${State.statsType==='list'   ?'active':''}">리스트</button>
+      <button data-type="expense"  class="${State.statsType==='expense' ?'active':''}">지출</button>
+      <button data-type="income"   class="${State.statsType==='income'  ?'active':''}">수입</button>
+      <button data-type="interest" class="${State.statsType==='interest'?'active':''}">이자</button>
+      <button data-type="list"     class="${State.statsType==='list'    ?'active':''}">리스트</button>
     </div>
 
     <!-- 요약 숫자 -->
@@ -3159,20 +3163,22 @@ function renderStats() {
 
     ${isList
       ? buildLedgerSectionsHTML(range)
-      : (State.statsView === 'stats'
-          ? `${renderStatsTabBars(statRows, statTotal, isIncome)}
-             ${!isIncome ? `<div style="margin-top:6px;">${renderExpenseTableA4(list, range)}</div>` : ''}`
-          : renderStatsTabDetail(detailTx, isIncome))
+      : isInterest
+        ? renderInterestTab(range)
+        : (State.statsView === 'stats'
+            ? `${renderStatsTabBars(statRows, statTotal, isIncome)}
+               ${!isIncome ? `<div style="margin-top:6px;">${renderExpenseTableA4(list, range)}</div>` : ''}`
+            : renderStatsTabDetail(detailTx, isIncome))
     }
   `;
 
   // 이벤트
-  page.querySelector('#statsExcel').addEventListener('click', () => {
+  page.querySelector('#statsExcel')?.addEventListener('click', () => {
     if (State.statsType === 'list') exportLedgerRangeToExcel(range);
     else if (State.statsType === 'income') exportPivotToExcel();
     else exportExpenseToExcel();
   });
-  page.querySelector('#statsPrint').addEventListener('click', () => {
+  page.querySelector('#statsPrint')?.addEventListener('click', () => {
     if (State.statsType === 'list') printLedgerRange(range);
     else printStats();
   });
@@ -3237,6 +3243,10 @@ function renderStats() {
 
   page.querySelectorAll('.stats-agg-row').forEach(el => {
     el.addEventListener('click', () => openSubStatDetail(el.dataset.key));
+  });
+
+  page.querySelectorAll('.interest-agg-row').forEach(el => {
+    el.addEventListener('click', () => openInterestDetail(el.dataset.key));
   });
 
   page.querySelectorAll('[data-sortkey]').forEach(el => {
@@ -3560,6 +3570,88 @@ function renderStatsTabDetail(detailTx, isIncome) {
       <div class="stats-agg-total">
         <span style="font-weight:700; color:var(--text-2);">합계</span>
         <span class="tabular ${isIncome?'income':'expense'}" style="font-weight:800;">${fmtMoney(totalAmt)}원</span>
+      </div>
+    </div>
+  `;
+}
+
+// [이자] 탭: 계정별 이자 합계 집계
+// key → { label(계정명), amount, count, entries:[{txId,date,amount,subName}] }
+// 대표계정(재정계정) 거래도 포함하기 위해 mainAcctTxs()가 아닌 전체 거래를 날짜로만 필터링한다.
+function buildInterestAggMap(range) {
+  const aggMap = {};
+  const interestCat = State.categories.find(c => c.type === 'income' && c.name === '이자');
+  if (!interestCat) return aggMap;
+
+  const idToName = {};
+  for (const a of (State.linkedAccounts || [])) idToName[a.id] = a.name;
+  const defAcct = (State.linkedAccounts || []).find(a => a.isDefault);
+  const mainLabel = defAcct ? defAcct.name : '대표계정';
+
+  for (const t of State.transactions) {
+    if (t.type !== 'income') continue;
+    if (t.categoryId !== interestCat.id) continue;
+    if (t.date < range.start || t.date > range.end) continue;
+
+    const key   = t.accountId || 'default';
+    const label = (t.accountId && idToName[t.accountId]) ? idToName[t.accountId] : mainLabel;
+    if (!aggMap[key]) aggMap[key] = { label, amount: 0, count: 0, entries: [] };
+
+    for (const l of (t.lines && t.lines.length ? t.lines : [{ subItemId: null, amount: t.amount }])) {
+      const si = subItemById(l.subItemId);
+      aggMap[key].amount += l.amount;
+      aggMap[key].count  += 1;
+      aggMap[key].entries.push({ txId: t.id, date: t.date, amount: l.amount, subName: si ? si.name : '이자' });
+    }
+  }
+  return aggMap;
+}
+
+function renderInterestTab(range) {
+  const sortKey = State.statsSortKey;
+  const sortDir = State.statsSortDir;
+  const arrow = sortDir === 'desc' ? ' ▼' : ' ▲';
+  const hStyle = key => `cursor:pointer; ${sortKey===key ? 'color:var(--text-1);' : ''}`;
+
+  const header = `
+    <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+      <span data-sortkey="label" style="${hStyle('label')}">계정${sortKey==='label'?arrow:''}</span>
+      <div style="display:flex; gap:16px; font-size:11.5px; color:var(--text-3); font-weight:700; padding-right:2px;">
+        <span data-sortkey="count" style="min-width:36px; text-align:right; ${hStyle('count')}">건수${sortKey==='count'?arrow:''}</span>
+        <span data-sortkey="amount" style="min-width:90px; text-align:right; ${hStyle('amount')}">이자금액${sortKey==='amount'?arrow:''}</span>
+      </div>
+    </div>
+  `;
+
+  const aggMap = buildInterestAggMap(range);
+  const aggRows = Object.entries(aggMap)
+    .map(([key, r]) => ({ key, ...r }))
+    .sort((a, b) => {
+      let cmp;
+      if (sortKey === 'label') cmp = a.label.localeCompare(b.label, 'ko');
+      else if (sortKey === 'count') cmp = a.count - b.count;
+      else cmp = a.amount - b.amount;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+  if (aggRows.length === 0) {
+    return header + `<div class="card" style="padding:6px 16px;">${emptyStateHTML('내역이 없어요', '선택한 기간의 이자 내역이 없습니다')}</div>`;
+  }
+
+  const totalAmt = aggRows.reduce((s,r) => s + r.amount, 0);
+
+  return header + `
+    <div class="card" style="padding:0 16px;">
+      ${aggRows.map(r => `
+        <div class="interest-agg-row" data-key="${escapeHTML(r.key)}" style="cursor:pointer;">
+          <div class="stats-agg-label">🏦 ${escapeHTML(r.label)}</div>
+          <div class="stats-agg-count tabular">${r.count}건</div>
+          <div class="stats-agg-amt tabular income">${fmtMoney(r.amount)}원</div>
+        </div>
+      `).join('')}
+      <div class="stats-agg-total">
+        <span style="font-weight:700; color:var(--text-2);">합계</span>
+        <span class="tabular income" style="font-weight:800;">${fmtMoney(totalAmt)}원</span>
       </div>
     </div>
   `;
@@ -6267,6 +6359,7 @@ function closeAllSheets() {
   State.dayDetailDate = null;
   State.catStatDetailId = null;
   State.subStatDetailKey = null;
+  State.interestDetailKey = null;
 }
 
 function openSheet(id) {
@@ -6294,6 +6387,9 @@ function closeTxSheet() {
   } else if (State.subStatDetailKey) {
     document.getElementById('txSheet').classList.remove('show');
     openSubStatDetail(State.subStatDetailKey);
+  } else if (State.interestDetailKey) {
+    document.getElementById('txSheet').classList.remove('show');
+    openInterestDetail(State.interestDetailKey);
   } else {
     closeAllSheets();
   }
@@ -7494,6 +7590,64 @@ function renderSubStatDetail(key) {
                   </div>
                 `;
               }).join('')}
+            </div>
+          `).join('')
+      }
+    </div>
+  `;
+
+  sheet.querySelector('#ssdClose').addEventListener('click', closeAllSheets);
+  sheet.querySelectorAll('.tx-item').forEach(el => {
+    el.addEventListener('click', () => openTxSheet(el.dataset.id));
+  });
+}
+
+// [이자] 탭: 계정별 이자 상세 시트
+function openInterestDetail(key) {
+  State.interestDetailKey = key;
+  renderInterestDetail(key);
+  openSheet('subStatDetailSheet');
+}
+
+function renderInterestDetail(key) {
+  const sheet = document.getElementById('subStatDetailSheet');
+  const range = statsPeriodRange();
+  const aggMap = buildInterestAggMap(range);
+  const agg = aggMap[key] || { label: '내역', amount: 0, count: 0, entries: [] };
+
+  const entries = agg.entries.slice().sort((a,b) => a.date.localeCompare(b.date));
+
+  // 날짜별 그룹화
+  const byDate = {};
+  for (const e of entries) {
+    (byDate[e.date] = byDate[e.date] || []).push(e);
+  }
+  const dates = Object.keys(byDate).sort();
+
+  sheet.innerHTML = `
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <button id="ssdClose" class="sheet-close-btn">${ICONS.close}닫기</button>
+      <h3>🏦 ${escapeHTML(agg.label)}</h3>
+      <button class="sheet-close-btn" style="visibility:hidden;">${ICONS.close}닫기</button>
+    </div>
+    <div class="sheet-body">
+      <div class="daydetail-summary">
+        <span>${range.label}</span>
+        <b class="tabular income">${fmtMoney(agg.amount)}원</b>
+      </div>
+
+      ${dates.length === 0
+        ? `<div class="card" style="padding:6px 16px;">${emptyStateHTML('내역이 없어요', '선택한 기간의 이자 내역이 없습니다')}</div>`
+        : dates.map(d => `
+            <div class="section-title">${dayLabel(d)}</div>
+            <div class="card" style="padding:0 16px; margin-bottom:14px;">
+              ${byDate[d].map(e => `
+                <div class="stats-agg-row tx-item" data-id="${e.txId}" style="cursor:pointer;">
+                  <div class="stats-agg-label">${escapeHTML(e.subName)}</div>
+                  <div class="stats-agg-amt tabular income">${fmtMoney(e.amount)}원</div>
+                </div>
+              `).join('')}
             </div>
           `).join('')
       }

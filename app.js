@@ -8256,7 +8256,7 @@ function renderCatTree(sheet) {
       </div>
       <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:8px; box-shadow:var(--shadow); color:var(--text-1); margin-bottom:10px;">
         <button id="catMPrevYear" style="color:var(--text-2);">${ICONS.chevLeft}</button>
-        <button id="catMYearLabel" style="background:none;border:none;font-size:14px;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px;">${year}년 예산 편집 <span style="font-size:11px;color:var(--text-3);">▾</span></button>
+        <button id="catMYearLabel" style="background:none;border:none;font-size:14px;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;flex:1;display:flex;align-items:center;justify-content:center;gap:4px;white-space:nowrap;">${year}년 예산 편집 <span style="font-size:11px;color:var(--text-3);">▾</span></button>
         <button id="catMNextYear" style="color:var(--text-2);">${ICONS.chevRight}</button>
       </div>
       <div style="background:${accentBg};border-radius:10px;padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">

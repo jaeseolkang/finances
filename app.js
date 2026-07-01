@@ -413,6 +413,8 @@ const State = {
   statsSortDir: 'desc',     // 'asc' | 'desc'
   budgetExpanded: {},       // { [catId]: true/false, [catId+'__'+groupName]: true/false }
   accountsSubTab: 'normal', // 'normal' | 'deposit'
+  normalSortKey: 'name',    // 'name' | 'maturity'
+  normalSortDir: 'asc',     // 'asc' | 'desc'
   depositSortKey: 'name',   // 'name' | 'maturity'
   depositSortDir: 'asc',    // 'asc' | 'desc'
 };
@@ -3250,7 +3252,7 @@ function printAccounts({sub, accounts, totals, grandNet, grandNetColor, mainNet,
             <div style="font-size:8.5pt;font-weight:700;white-space:nowrap;">${normalNet.toLocaleString('ko-KR')}원</div>
           </div>
           <div style="flex:1;min-width:0;border-left:0.5pt solid #b0c4de;padding-left:6pt;">
-            <div style="font-size:6.5pt;color:#555;white-space:nowrap;">정기예금</div>
+            <div style="font-size:6.5pt;color:#555;white-space:nowrap;">정기계정</div>
             <div style="font-size:8.5pt;font-weight:700;white-space:nowrap;">${depositNet.toLocaleString('ko-KR')}원</div>
           </div>
         </div>
@@ -3259,8 +3261,8 @@ function printAccounts({sub, accounts, totals, grandNet, grandNetColor, mainNet,
         <div class="print-section-title">일반계정 합계 · ${normalNet.toLocaleString('ko-KR')}원</div>
         ${makeTable(normalAccts, false)}
 
-        <!-- 정기예금 -->
-        <div class="print-section-title" style="margin-top:10pt;">정기예금 합계 · ${depositNet.toLocaleString('ko-KR')}원</div>
+        <!-- 정기계정 -->
+        <div class="print-section-title" style="margin-top:10pt;">정기계정 합계 · ${depositNet.toLocaleString('ko-KR')}원</div>
         ${makeTable(depositAccts, true)}
       </div>
     </div>`;
@@ -3904,9 +3906,9 @@ async function renderAccounts() {
     return !a.accountKind || a.accountKind === 'normal';
   });
 
-  if (sub === 'deposit' && accounts.length > 0) {
-    const sk  = State.depositSortKey || 'name';
-    const dir = State.depositSortDir || 'asc';
+  if (accounts.length > 0) {
+    const sk  = (sub === 'deposit' ? State.depositSortKey : State.normalSortKey) || 'name';
+    const dir = (sub === 'deposit' ? State.depositSortDir : State.normalSortDir) || 'asc';
     accounts = [...accounts].sort((a, b) => {
       let va, vb;
       if (sk === 'maturity') {
@@ -3966,7 +3968,7 @@ async function renderAccounts() {
         </tr>`;
       }).join('');
 
-  const summaryTitle = sub === 'deposit' ? '정기예금 합계' : '계좌 합계';
+  const summaryTitle = sub === 'deposit' ? '정기계정 합계' : '계좌 합계';
 
   page.innerHTML = `
     <div class="appbar" style="padding-left:0;padding-right:0;display:flex;align-items:center;justify-content:space-between;">
@@ -3988,7 +3990,7 @@ async function renderAccounts() {
           <span class="acct-grand-val">${normalNet.toLocaleString('ko-KR')}원</span>
         </div>
         <div class="acct-grand-row">
-          <span class="acct-grand-label">정기예금</span>
+          <span class="acct-grand-label">정기계정</span>
           <span class="acct-grand-val">${depositNet.toLocaleString('ko-KR')}원</span>
         </div>
       </div>
@@ -3997,7 +3999,7 @@ async function renderAccounts() {
     <!-- 서브탭 -->
     <div class="acct-sub-tabs">
       <button class="acct-sub-tab ${sub==='normal'?'active':''}" data-sub="normal">일반계정</button>
-      <button class="acct-sub-tab ${sub==='deposit'?'active':''}" data-sub="deposit">정기예금</button>
+      <button class="acct-sub-tab ${sub==='deposit'?'active':''}" data-sub="deposit">정기계정</button>
     </div>
 
     <div class="acct-summary-card">
@@ -4014,8 +4016,8 @@ async function renderAccounts() {
       <table class="acct-tbl" style="min-width:${sub==='deposit'?'580px':'460px'};">
         <thead>
           <tr>
-            <th class="acct-tbl-name ${sub==='deposit'?'acct-th-sort':''}" data-sort="name">
-              계좌이름${sub==='deposit' ? `<span class="acct-sort-icon">${State.depositSortKey==='name' ? (State.depositSortDir==='asc'?'↑':'↓') : '↕'}</span>` : ''}
+            <th class="acct-tbl-name acct-th-sort" data-sort="name">
+              계좌이름<span class="acct-sort-icon">${(sub==='deposit' ? State.depositSortKey : State.normalSortKey)==='name' ? ((sub==='deposit' ? State.depositSortDir : State.normalSortDir)==='asc'?'↑':'↓') : '↕'}</span>
             </th>
             <th class="acct-tbl-num">이월금</th>
             <th class="acct-tbl-num">수입금</th>
@@ -4044,21 +4046,21 @@ async function renderAccounts() {
     nonDefaultAccts
   }));
 
-  // 정기예금 탭: 헤더 클릭 정렬
-  if (sub === 'deposit') {
-    page.querySelectorAll('.acct-th-sort[data-sort]').forEach(th => {
-      th.addEventListener('click', () => {
-        const key = th.dataset.sort;
-        if (State.depositSortKey === key) {
-          State.depositSortDir = State.depositSortDir === 'asc' ? 'desc' : 'asc';
-        } else {
-          State.depositSortKey = key;
-          State.depositSortDir = 'asc';
-        }
-        renderAccounts();
-      });
+  // 계정 탭(일반계정/정기계정): 헤더 클릭 정렬
+  page.querySelectorAll('.acct-th-sort[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const sortKeyProp = sub === 'deposit' ? 'depositSortKey' : 'normalSortKey';
+      const sortDirProp = sub === 'deposit' ? 'depositSortDir' : 'normalSortDir';
+      if (State[sortKeyProp] === key) {
+        State[sortDirProp] = State[sortDirProp] === 'asc' ? 'desc' : 'asc';
+      } else {
+        State[sortKeyProp] = key;
+        State[sortDirProp] = 'asc';
+      }
+      renderAccounts();
     });
-  }
+  });
 
   page.querySelectorAll('.acct-tbl-row[data-acct-id]').forEach(row => {
     row.addEventListener('click', () => {

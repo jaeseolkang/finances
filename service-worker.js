@@ -1,6 +1,6 @@
-// 2026-07-01 KST | CACHE_NAME v2011 (통계-리스트 및 인쇄 모드에 '맨 위로' 버튼 추가)
+// 2026-07-01 KST | CACHE_NAME v2012 (방식 B 비정규화 + 방식 A 연도 스냅샷 하이브리드 저장 구조 추가)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2011';
+const CACHE_NAME = 'gaegyebu-v2012';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

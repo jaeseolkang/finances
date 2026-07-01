@@ -192,7 +192,7 @@ async function syncFromFirebase() {
    ========================================================= */
 const DB = (() => {
   const DB_NAME = 'budgetAppDB';
-  const DB_VERSION = 5;
+  const DB_VERSION = 6;
   let db = null;
 
   function open() {
@@ -235,6 +235,10 @@ const DB = (() => {
         }
         if (!_db.objectStoreNames.contains('linkedAccounts')) {
           _db.createObjectStore('linkedAccounts', { keyPath: 'id' });
+        }
+        // 방식 A: 연도별 항목(대분류/중분류/소분류) 스냅샷 — "예전엔 이런 항목이 있었어요" 조회용
+        if (!_db.objectStoreNames.contains('categorySnapshots')) {
+          _db.createObjectStore('categorySnapshots', { keyPath: 'year' });
         }
       };
       req.onsuccess = (e) => { db = e.target.result; resolve(db); };
@@ -422,6 +426,7 @@ const State = {
   homeView: 'calendar', // 'calendar' | 'daily' | 'monthly'
   cursorDate: new Date(), // 현재 보고 있는 월 기준
   categories: [],
+  categorySnapshots: [], // 방식 A: 연도별 항목 스냅샷 (예전 항목 보기용)
   persons: [],
   subItems: [],
   subGroups: [],
@@ -521,6 +526,106 @@ function personById(id) {
 function subItemById(id) {
   return State.subItems.find(s => s.id === id);
 }
+
+/* =========================================================
+   방식 B (비정규화): 거래에 이름을 같이 저장해두고, 표시할 때는
+   "그 거래가 저장될 당시의 이름"을 최우선으로 보여준다.
+   → 나중에 카테고리 이름을 바꾸거나 삭제해도 과거 거래 기록은 그대로 유지됨.
+   방식 A (연도 스냅샷)는 categorySnapshots 스토어에 별도 보관되며
+   카테고리 관리 화면의 "예전 항목 보기"에서만 쓰인다 (아래 참고).
+   ========================================================= */
+
+// 거래 1건의 대분류 표시정보: 거래에 박혀있는 이름(방식 B) > 현재 카테고리 > 스냅샷(방식 A) > 기본값
+function txCatInfo(t) {
+  const cat = catById(t.categoryId);
+  const snap = !t.categoryName && !cat ? findCatInSnapshots(t.categoryId) : null;
+  return {
+    id: t.categoryId,
+    name: t.categoryName || cat?.name || snap?.name || '삭제된 항목',
+    icon: t.categoryIcon || cat?.icon || snap?.icon || '📦',
+    color: t.categoryColor || cat?.color || snap?.color || '#9CA3AF',
+    type: cat?.type || t.type,
+    usePersonLevel: cat ? !!cat.usePersonLevel : false,
+  };
+}
+
+// 거래 1건의 중분류(=하위항목/인물 이름) 표시명: 거래에 박혀있는 이름 우선
+function txSubGroupName(t) {
+  if (t.subGroupName) return t.subGroupName;
+  const sgId = t.subGroupId || t.personId;
+  if (!sgId) return null;
+  const sg = (State.subGroups || []).find(g => g.id === sgId);
+  if (sg) return sg.name;
+  const p = personById(sgId);
+  return p ? p.name : null;
+}
+
+// 거래의 세부항목(라인) 1건 표시명: 라인에 박혀있는 이름 우선
+function txLineName(l) {
+  return l.subItemName || (subItemById(l.subItemId) || {}).name || '항목';
+}
+
+// 카테고리가 삭제된 경우, 연도 스냅샷들에서 마지막으로 기록된 정보를 찾는다 (방식 A 활용)
+function findCatInSnapshots(catId) {
+  if (!catId) return null;
+  const snaps = State.categorySnapshots || []; // 최신 연도순 정렬되어 있음
+  for (const snap of snaps) {
+    const found = (snap.categories || []).find(c => c.id === catId);
+    if (found) return found;
+  }
+  return null;
+}
+
+// 카테고리 단위(개별 거래가 아닌) 표시가 필요한 곳에서 쓰는 폴백: 현재 카테고리 > 스냅샷 > 기본값
+function catFallbackInfo(catId, defaults) {
+  const cat = catById(catId);
+  if (cat) return cat;
+  const snap = findCatInSnapshots(catId);
+  return {
+    id: catId,
+    name: snap?.name || (defaults?.name ?? '삭제된 항목'),
+    icon: snap?.icon || (defaults?.icon ?? '📦'),
+    color: snap?.color || (defaults?.color ?? '#9CA3AF'),
+    usePersonLevel: false,
+    type: defaults?.type,
+  };
+}
+
+/* ── 방식 A: 연도 스냅샷 저장/누적 ──
+   그 해에 "존재했던 적이 있는" 모든 대분류/중분류/소분류를 계속 누적해서 보관한다.
+   (이미 삭제된 항목이라도 한 번 스냅샷에 들어가면 계속 남아있음 — 합집합 방식) */
+async function ensureYearSnapshot(year) {
+  try {
+    let existing = null;
+    try { existing = await DB.get('categorySnapshots', year); } catch (e) { existing = null; }
+
+    const mergeById = (prev, curr) => {
+      const map = new Map((prev || []).map(x => [x.id, x]));
+      (curr || []).forEach(x => map.set(x.id, {
+        id: x.id, name: x.name, icon: x.icon, color: x.color,
+        type: x.type, categoryId: x.categoryId, order: x.order
+      }));
+      return Array.from(map.values());
+    };
+
+    const snapshot = {
+      year,
+      categories: mergeById(existing?.categories, State.categories),
+      subGroups: mergeById(existing?.subGroups, State.subGroups || []),
+      subItems: mergeById(existing?.subItems, State.subItems || []),
+      updatedAt: Date.now(),
+    };
+    await DB.put('categorySnapshots', snapshot);
+    State.categorySnapshots = State.categorySnapshots || [];
+    const idx = State.categorySnapshots.findIndex(s => s.year === year);
+    if (idx >= 0) State.categorySnapshots[idx] = snapshot;
+    else State.categorySnapshots.unshift(snapshot);
+    State.categorySnapshots.sort((a,b) => b.year - a.year);
+  } catch (e) {
+    console.error('ensureYearSnapshot error:', e);
+  }
+}
+
 function subItemsOfCategory(catId) {
   return State.subItems.filter(s => s.categoryId === catId).sort((a,b)=>a.name.localeCompare(b.name,'ko') || (a.order??0)-(b.order??0));
 }
@@ -705,9 +810,10 @@ async function migrateSubGroupsFromSubItems() {
 }
 
 async function reloadData() {
-  const [cats, persons, subItems, subGroups, txs, linkedAccounts] = await Promise.all([
+  const [cats, persons, subItems, subGroups, txs, linkedAccounts, catSnapshots] = await Promise.all([
     DB.getAll('categories'), DB.getAll('persons'), DB.getAll('subItems'),
-    DB.getAll('subGroups'), DB.getAll('transactions'), DB.getAll('linkedAccounts')
+    DB.getAll('subGroups'), DB.getAll('transactions'), DB.getAll('linkedAccounts'),
+    DB.getAll('categorySnapshots')
   ]);
   cats.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   cats.forEach(migrateBudgetObj);
@@ -719,6 +825,7 @@ async function reloadData() {
   State.subGroups = subGroups || [];
   State.linkedAccounts = (linkedAccounts || []).sort((a,b) => a.createdAt - b.createdAt);
   State.transactions = txs.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  State.categorySnapshots = (catSnapshots || []).sort((a,b) => b.year - a.year);
 }
 
 /* ---- 연도별 전년이월 금액 ---- */
@@ -1005,6 +1112,7 @@ function renderShell() {
     <div class="sheet" id="linkedAccountsSheet"></div>
     <div class="sheet" id="acctDetailSheet" style="max-height:100%;border-radius:0;"></div>
     <div class="sheet" id="catManageSheet"></div>
+    <div class="sheet" id="oldItemsSheet"></div>
     <div class="sheet" id="catEditSheet"></div>
     <div class="sheet" id="catSubSheet"></div>
     <div class="sheet" id="dayDetailSheet" style="max-height:100%; border-radius:0;"></div>
@@ -1440,21 +1548,14 @@ function emptyStateHTML(msg, sub) {
 }
 
 function txDisplayTitle(t) {
-  const cat = catById(t.categoryId) || { name: '삭제된 항목' };
-  // 신 구조: subGroupId, 구 구조(마이그레이션 전 잔존): personId
-  const sgId = t.subGroupId || t.personId;
-  if (sgId) {
-    const sg = (State.subGroups || []).find(g => g.id === sgId);
-    if (sg) return sg.name;
-    // personId 구버전 fallback
-    const p = personById(sgId);
-    if (p) return p.name;
-  }
-  return cat.name;
+  // 방식 B: 저장 당시의 이름을 최우선으로 사용 (카테고리가 나중에 개명/삭제되어도 유지)
+  const sgName = txSubGroupName(t);
+  if (sgName) return sgName;
+  return txCatInfo(t).name;
 }
 
 function txItemHTML(t) {
-  const cat = catById(t.categoryId) || { icon: '📦', color: '#9CA3AF', name: '삭제된 항목' };
+  const cat = txCatInfo(t);
   const lines = t.lines || [];
 
   // 제목: 하위항목(중분류)이 있으면 그 이름, 없으면 대분류명
@@ -1463,7 +1564,7 @@ function txItemHTML(t) {
   // 부제: 메모가 있으면 메모, 아니면 (인물별 대분류일 땐 대분류명도 같이) 세부항목 요약
   let itemsSummary;
   if (lines.length > 0) {
-    const names = lines.map(l => (subItemById(l.subItemId) || {}).name || '항목').filter(Boolean);
+    const names = lines.map(l => txLineName(l)).filter(Boolean);
     itemsSummary = names.slice(0, 2).join(', ');
     if (names.length > 2) itemsSummary += ` 외 ${names.length - 2}건`;
   } else {
@@ -2291,14 +2392,13 @@ function exportLedgerToExcel(ym) {
   // ── rows 구성 (renderLedger와 동일) ──
   const rows = [];
   for (const t of txs) {
-    const cat = catById(t.categoryId)||{name:'?',type:t.type};
-    const sgId = t.subGroupId||t.personId;
-    const sg = sgId ? (State.subGroups||[]).find(g=>g.id===sgId)||(State.persons||[]).find(p=>p.id===sgId) : null;
-    const sgName = sg ? sg.name : '';
+    const cat = txCatInfo(t);
+    const sgName = txSubGroupName(t) || '';
     const lines = (t.lines&&t.lines.length>0) ? t.lines : [{subItemId:null,amount:t.amount}];
     for (const l of lines) {
       const si = l.subItemId ? subItemById(l.subItemId) : null;
-      const siName = si ? subItemDisplayName(cat.type, cat.name, si.name) : '';
+      const siRawName = txLineName(l);
+      const siName = (l.subItemId || l.subItemName) ? subItemDisplayName(cat.type, cat.name, siRawName) : '';
       const hasGroups = subGroupsOfCategory(cat.id).length > 0;
       const major = hasGroups ? sgName : (si&&si.subGroupId?((State.subGroups||[]).find(g=>g.id===si.subGroupId)||{}).name||'':'');
       running += t.type==='income' ? l.amount : -l.amount;
@@ -2491,14 +2591,13 @@ function prepareLedgerSections(range) {
 
     const rows = [];
     for (const t of monthTxs) {
-      const cat = catById(t.categoryId) || {name:'?', type:t.type};
-      const sgId = t.subGroupId || t.personId;
-      const sg = sgId ? (State.subGroups||[]).find(g=>g.id===sgId)||(State.persons||[]).find(p=>p.id===sgId) : null;
-      const sgName = sg ? sg.name : '';
+      const cat = txCatInfo(t);
+      const sgName = txSubGroupName(t) || '';
       const lines = (t.lines && t.lines.length > 0) ? t.lines : [{subItemId:null, amount:t.amount}];
       for (const l of lines) {
         const si = l.subItemId ? subItemById(l.subItemId) : null;
-        const siName = si ? subItemDisplayName(cat.type, cat.name, si.name) : '';
+        const siRawName = txLineName(l);
+        const siName = (l.subItemId || l.subItemName) ? subItemDisplayName(cat.type, cat.name, siRawName) : '';
         const hasGroups = subGroupsOfCategory(cat.id).length > 0;
         const major = hasGroups ? sgName : (si && si.subGroupId ? ((State.subGroups||[]).find(g=>g.id===si.subGroupId)||{}).name||'' : '');
         running += t.type === 'income' ? l.amount : -l.amount;
@@ -2808,7 +2907,7 @@ function printStats() {
   }
   const statRows = Object.entries(byCat)
     .map(([catId, amt]) => {
-      const cat = catById(catId) || {name:'삭제된 항목', icon: isIncome?'🙏':'📦'};
+      const cat = catFallbackInfo(catId, {icon: isIncome?'🙏':'📦'});
       return { icon: cat.icon, name: cat.name, amt };
     })
     .sort((a,b) => b.amt - a.amt);
@@ -3129,7 +3228,7 @@ function renderStats() {
     }
     statRows = Object.entries(byCat)
       .map(([catId, amt]) => {
-        const cat = catById(catId) || {name:'삭제된 항목', color:'#9CA3AF', icon: isIncome ? '🙏' : '📦'};
+        const cat = catFallbackInfo(catId, {color:'#9CA3AF', icon: isIncome ? '🙏' : '📦'});
         return { catId, icon: cat.icon, name: cat.name, color: cat.color, amt };
       })
       .sort((a,b) => b.amt - a.amt);
@@ -3574,11 +3673,11 @@ function buildStatsAggMap(detailTx, isIncome) {
   } else {
     // 지출: "대분류/소분류" 조합으로 집계
     for (const t of detailTx) {
-      const cat = catById(t.categoryId) || { name: '기타' };
+      const cat = txCatInfo(t);
       for (const l of (t.lines || [])) {
-        const si  = subItemById(l.subItemId);
+        const siName = txLineName(l);
         const key = `${t.categoryId}__${l.subItemId||''}`;
-        const lbl = si ? `${cat.name}/${si.name}` : cat.name;
+        const lbl = (l.subItemId || l.subItemName) ? `${cat.name}/${siName}` : cat.name;
         if (!aggMap[key]) aggMap[key] = { label: lbl, amount: 0, count: 0, entries: [] };
         aggMap[key].amount += l.amount;
         aggMap[key].count  += 1;
@@ -3759,14 +3858,13 @@ function openLedgerSheet() {
     // 데이터 행 생성
     const rows = [];
     for (const t of txs) {
-      const cat = catById(t.categoryId) || {name:'?', type:t.type};
-      const sgId = t.subGroupId || t.personId;
-      const sg = sgId ? (State.subGroups||[]).find(g=>g.id===sgId)||(State.persons||[]).find(p=>p.id===sgId) : null;
-      const sgName = sg ? sg.name : '';
+      const cat = txCatInfo(t);
+      const sgName = txSubGroupName(t) || '';
       const lines = (t.lines && t.lines.length > 0) ? t.lines : [{subItemId:null, amount:t.amount}];
       for (const l of lines) {
         const si = l.subItemId ? subItemById(l.subItemId) : null;
-        const siName = si ? subItemDisplayName(cat.type, cat.name, si.name) : '';
+        const siRawName = txLineName(l);
+        const siName = (l.subItemId || l.subItemName) ? subItemDisplayName(cat.type, cat.name, siRawName) : '';
         // 중분류: subGroups 있는 카테고리면 sg이름, 아니면 subGroup명
         const hasGroups = subGroupsOfCategory(cat.id).length > 0;
         const major = hasGroups ? sgName : (si && si.subGroupId ? ((State.subGroups||[]).find(g=>g.id===si.subGroupId)||{}).name||'' : '');
@@ -5549,12 +5647,8 @@ function subItemDisplayName(catType, catName, subName) {
 // 인물단계 대분류: 대분류칸=인물이름, 소분류칸=세부항목명(헌금 표기)
 // 인물단계 없는 대분류: 대분류칸=대분류명, 소분류칸=세부항목명
 function explodeTxToRows(t) {
-  const cat = catById(t.categoryId) || { name: '삭제된 항목', usePersonLevel: false, type: t.type };
-  const sgId = t.subGroupId || t.personId;
-  // subGroups 스토어에서 먼저 찾고, 없으면 persons에서 찾기
-  const sg = sgId ? (State.subGroups || []).find(g => g.id === sgId) : null;
-  const person = (!sg && sgId) ? (State.persons || []).find(p => p.id === sgId) : null;
-  const sgName = sg ? sg.name : (person ? person.name : null);
+  const cat = txCatInfo(t);
+  const sgName = txSubGroupName(t);
   const hasGroupStructure = subGroupsOfCategory(cat.id).length > 0;
 
   let major, minor_prefix;
@@ -5568,8 +5662,8 @@ function explodeTxToRows(t) {
 
   const lines = (t['lines'] && t['lines'].length > 0) ? t['lines'] : [{ subItemId: null, amount: t['amount'] }];
   return lines.map(l => {
-    const si = l['subItemId'] ? subItemById(l['subItemId']) : null;
-    const subName = si ? subItemDisplayName(cat['type'], cat['name'], si['name']) : '';
+    const subRawName = txLineName(l);
+    const subName = (l['subItemId'] || l.subItemName) ? subItemDisplayName(cat['type'], cat['name'], subRawName) : '';
     return {
       date: t['date'],
       major,
@@ -7092,16 +7186,24 @@ async function saveTx() {
 
   const lines = Object.entries(State.formAmounts)
     .filter(([, amt]) => Number(amt) > 0)
-    .map(([subItemId, amt]) => ({
-      subItemId: subItemId === '__direct__' ? null : subItemId,
-      amount: Number(amt)
-    }));
+    .map(([subItemId, amt]) => {
+      const realId = subItemId === '__direct__' ? null : subItemId;
+      const si = realId ? subItemById(realId) : null;
+      return {
+        subItemId: realId,
+        amount: Number(amt),
+        subItemName: si ? si.name : null, // 방식 B: 저장 시점의 세부항목 이름을 함께 기록
+      };
+    });
 
   if (lines.length === 0) { showToast('금액을 1개 이상 입력해주세요'); return; }
   // usePersonLevel 구조 사용 안 함 — subGroupId 필수 여부는 subGroups 여부로 판단
   if (!date) { showToast('날짜를 선택해주세요'); return; }
 
   const total = lines.reduce((s, l) => s + l.amount, 0);
+
+  // 방식 B: 저장 시점의 대분류/중분류(하위항목) 이름을 거래에 함께 저장 (비정규화)
+  const sg = State.formSubGroupId ? (State.subGroups || []).find(g => g.id === State.formSubGroupId) : null;
 
   const record = {
     id: State.editingTx ? State.editingTx.id : uid(),
@@ -7114,6 +7216,10 @@ async function saveTx() {
     memo,
     accountId: State.formAccountId || null,
     createdAt: State.editingTx ? State.editingTx.createdAt : Date.now(),
+    categoryName: cat ? cat.name : null,
+    categoryIcon: cat ? cat.icon : null,
+    categoryColor: cat ? cat.color : null,
+    subGroupName: sg ? sg.name : null,
   };
   await DB.put('transactions', record);
   await reloadData();
@@ -7302,7 +7408,7 @@ function openCatStatDetail(categoryId) {
 function renderCatStatDetail(categoryId) {
   const sheet = document.getElementById('catStatDetailSheet');
   const range = statsPeriodRange();
-  const cat = catById(categoryId) || { name: '삭제된 항목', icon: '📦', color: '#9CA3AF' };
+  const cat = catFallbackInfo(categoryId);
   const list = txInPeriod(range.start, range.end)
     .filter(t => t.type === State.statsType && t.categoryId === categoryId)
     .sort((a,b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
@@ -7640,11 +7746,13 @@ function renderSubStatDetail(key) {
             <div class="section-title">${dayLabel(d)}</div>
             <div class="card" style="padding:0 16px; margin-bottom:14px;">
               ${byDate[d].map(e => {
-                const cat = catById(e.categoryId) || { name: '삭제된 항목', icon:'📦', color:'#9CA3AF' };
+                const srcTx = State.transactions.find(x => x.id === e.txId);
+                const cat = srcTx ? txCatInfo(srcTx) : catFallbackInfo(e.categoryId);
                 // 수입(헌금)이면 중분류(사람 이름) 표시, 지출이면 카테고리 이름
                 let rowLabel;
                 if (isIncome && e.subGroupId) {
-                  const sg = (State.subGroups||[]).find(g=>g.id===e.subGroupId);
+                  const sgName = srcTx ? txSubGroupName(srcTx) : null;
+                  const sg = sgName ? { name: sgName } : (State.subGroups||[]).find(g=>g.id===e.subGroupId);
                   rowLabel = sg ? sg.name : (cat.icon ? cat.icon+' '+cat.name : cat.name);
                 } else {
                   rowLabel = (cat.icon ? cat.icon+' ' : '') + cat.name;
@@ -7962,6 +8070,73 @@ function renderCatManageSheet() {
   renderCatTree(sheet);
 }
 
+/* =========================================================
+   예전 항목 보기 (방식 A: 연도 스냅샷 조회)
+   지금은 삭제/개명되어 사라졌지만, 그 해에는 분명히 존재했던 대분류/중분류/소분류를
+   연도별로 모아 보여준다. 개별 거래 표시는 방식 B(비정규화)로 이미 해결되므로,
+   여기서는 순수하게 "히스토리 열람" 용도로만 쓰인다.
+   ========================================================= */
+function openOldItemsSheet() {
+  renderOldItemsSheet();
+  openSheet('oldItemsSheet');
+}
+
+function renderOldItemsSheet() {
+  const sheet = document.getElementById('oldItemsSheet');
+  const currentCatIds   = new Set(State.categories.map(c => c.id));
+  const currentGroupIds = new Set((State.subGroups || []).map(g => g.id));
+  const currentSubIds   = new Set(State.subItems.map(s => s.id));
+
+  const snaps = (State.categorySnapshots || []).slice().sort((a,b) => b.year - a.year);
+
+  const yearBlocks = snaps.map(snap => {
+    const goneCats   = (snap.categories || []).filter(c => !currentCatIds.has(c.id));
+    const goneGroups = (snap.subGroups  || []).filter(g => !currentGroupIds.has(g.id));
+    const goneSubs   = (snap.subItems   || []).filter(s => !currentSubIds.has(s.id));
+
+    if (goneCats.length === 0 && goneGroups.length === 0 && goneSubs.length === 0) return '';
+
+    return `
+      <div class="card" style="padding:12px 16px;margin-bottom:12px;">
+        <div style="font-size:13.5px;font-weight:800;margin-bottom:8px;">${snap.year}년에 있었던 항목</div>
+        ${goneCats.length ? `
+          <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-bottom:4px;">대분류</div>
+          ${goneCats.map(c => `
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 0;">
+              <div style="background:${hexToLight(c.color||'#9CA3AF')};width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;">${c.icon||'📦'}</div>
+              <span style="font-size:13px;">${escapeHTML(c.name)}</span>
+            </div>`).join('')}
+        ` : ''}
+        ${goneGroups.length ? `
+          <div style="font-size:11px;font-weight:700;color:var(--text-3);margin:8px 0 4px;">중분류</div>
+          ${goneGroups.map(g => `<div style="font-size:13px;padding:4px 0;">📂 ${escapeHTML(g.name)}</div>`).join('')}
+        ` : ''}
+        ${goneSubs.length ? `
+          <div style="font-size:11px;font-weight:700;color:var(--text-3);margin:8px 0 4px;">소분류</div>
+          ${goneSubs.map(s => `<div style="font-size:13px;padding:4px 0;color:var(--text-2);">· ${escapeHTML(s.name)}</div>`).join('')}
+        ` : ''}
+      </div>
+    `;
+  }).filter(Boolean).join('');
+
+  sheet.innerHTML = `
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <h3>예전 항목 보기</h3>
+      <button id="oldItemsClose" class="sheet-close-btn">${ICONS.close}닫기</button>
+    </div>
+    <div class="sheet-body">
+      <div style="font-size:12.5px;color:var(--text-3);margin-bottom:12px;">
+        지금은 삭제되었거나 이름이 바뀐 항목들이에요. 예전 거래 기록에는 그때 이름 그대로 남아있어요.
+      </div>
+      ${yearBlocks || emptyStateHTML('아직 기록된 예전 항목이 없어요', '항목을 삭제하거나 이름을 바꾸면 여기 자동으로 남아요')}
+    </div>
+  `;
+  sheet.querySelector('#oldItemsClose').addEventListener('click', () => {
+    closeSheet('oldItemsSheet');
+  });
+}
+
 // ── 항목 관리 트리 ──
 function renderCatTree(sheet) {
   const cats = State.categories.filter(c => c.type === catManageType);
@@ -8094,6 +8269,7 @@ function renderCatTree(sheet) {
           : cats.map(c => catBlockHTML(c)).join('')}
       </div>
       <button class="btn-secondary" id="catAddNew" style="color:var(--primary);font-weight:800;">+ 새 대분류 추가</button>
+      <button class="btn-secondary" id="oldItemsBtn" style="color:var(--text-2);font-weight:700;margin-top:6px;">🕘 예전 항목 보기</button>
     </div>
   `;
 
@@ -8102,6 +8278,7 @@ function renderCatTree(sheet) {
     b.addEventListener('click', () => { catManageType = b.dataset.type; renderCatManageSheet(); });
   });
   sheet.querySelector('#catAddNew').addEventListener('click', () => openCatEditSheet(null));
+  sheet.querySelector('#oldItemsBtn').addEventListener('click', () => openOldItemsSheet());
 
   // 연도 이동
   sheet.querySelector('#catMPrevYear').addEventListener('click', () => { catManageYear -= 1; renderCatManageSheet(); });
@@ -8173,6 +8350,7 @@ function renderCatTree(sheet) {
       if (!g) return;
       const name = prompt('중분류 이름 수정', g.name);
       if (!name?.trim()) return;
+      await ensureYearSnapshot(new Date().getFullYear());
       g.name = name.trim();
       await DB.put('subGroups', g); await reloadData(); renderCatManageSheet();
     });
@@ -8338,6 +8516,7 @@ function renderCatTree(sheet) {
       if (!item) return;
       const name = prompt('소분류 이름 수정', item.name);
       if (!name?.trim()) return;
+      await ensureYearSnapshot(new Date().getFullYear());
       item.name = name.trim();
       await DB.put('subItems', item); await reloadData(); renderCatManageSheet();
     });
@@ -8433,6 +8612,7 @@ function attachSubItemEvents(sheet, catId, groupId) {
       if (!item) return;
       const name = prompt('소분류 이름 수정', item.name);
       if (!name?.trim()) return;
+      await ensureYearSnapshot(new Date().getFullYear());
       item.name = name.trim();
       await DB.put('subItems', item); await reloadData(); renderCatManageSheet();
     });
@@ -8651,6 +8831,9 @@ async function doDeleteItem(doMove, targetCatId, targetGroupId, targetSubId, tar
     showToast(`거래 ${d.txs.length}건 이동 완료`);
   }
 
+  // 방식 A: 삭제되기 전, 올해 스냅샷에 현재 항목들을 먼저 누적 저장
+  await ensureYearSnapshot(new Date().getFullYear());
+
   // 실제 삭제
   if (d.type === 'sub') {
     await DB.del('subItems', d.id);
@@ -8687,6 +8870,7 @@ async function deleteSubWithConfirm(subId, catId, groupId) {
   const txs = State.transactions.filter(t => (t.lines||[]).some(l => l.subItemId === subId));
   if (txs.length === 0) {
     if (!confirm(`"${item.name}"을 삭제할까요?`)) return;
+    await ensureYearSnapshot(new Date().getFullYear());
     await DB.del('subItems', subId);
     await reloadData(); renderCatManageSheet(); renderCurrentPage();
     showToast('삭제됐어요');
@@ -8705,6 +8889,7 @@ async function deleteGroupWithConfirm(groupId, catId) {
   const txs = State.transactions.filter(t => (t.lines||[]).some(l => gSubs.some(s => s.id === l.subItemId)));
   if (txs.length === 0) {
     if (!confirm(`"${group.name}" 중분류와 하위 소분류 ${gSubs.length}개를 삭제할까요?`)) return;
+    await ensureYearSnapshot(new Date().getFullYear());
     for (const s of gSubs) await DB.del('subItems', s.id);
     await DB.del('subGroups', groupId);
     await reloadData(); renderCatManageSheet();
@@ -8722,6 +8907,7 @@ async function deleteCatWithConfirm(catId) {
   const txs = State.transactions.filter(t => t.categoryId === catId);
   if (txs.length === 0) {
     if (!confirm(`"${cat.name}" 대분류를 삭제할까요? 하위 항목도 모두 삭제됩니다.`)) return;
+    await ensureYearSnapshot(new Date().getFullYear());
     for (const s of subItemsOfCategory(catId)) await DB.del('subItems', s.id);
     for (const g of subGroupsOfCategory(catId)) await DB.del('subGroups', g.id);
     for (const p of personsOfCategory(catId, true)) await DB.del('persons', p.id);
@@ -8851,6 +9037,7 @@ function openCatEditSheet(catId) {
       }
       const isNew = !editing;
       if (isNew) { draft.id = uid(); draft.order = State.categories.length; }
+      else await ensureYearSnapshot(new Date().getFullYear()); // 수정 전 이름/아이콘/색상을 올해 스냅샷에 남겨둠
       await DB.put('categories', draft);
 
       // 새 대분류 추가 시: 중분류·소분류가 없으면 동일 이름으로 자동 생성
@@ -8875,9 +9062,10 @@ function openCatEditSheet(catId) {
       sheet.querySelector('#catDelete').addEventListener('click', async () => {
         const usedCount = State.transactions.filter(t => t.categoryId === editing.id).length;
         const msg = usedCount > 0
-          ? `이 대분류를 사용한 거래가 ${usedCount}건 있습니다. 삭제해도 거래 기록은 남지만 분류명이 표시되지 않습니다. 계속할까요?`
+          ? `이 대분류를 사용한 거래가 ${usedCount}건 있습니다. 삭제해도 기존 거래에는 그때의 분류명이 그대로 남아있어요. 계속할까요?`
           : '이 대분류를 삭제할까요? 하위 세부항목/이름도 함께 삭제됩니다.';
         if (!confirm(msg)) return;
+        await ensureYearSnapshot(new Date().getFullYear());
         await DB.del('categories', editing.id);
         for (const s of subItemsOfCategory(editing.id)) await DB.del('subItems', s.id);
         for (const p of personsOfCategory(editing.id)) await DB.del('persons', p.id);

@@ -8532,7 +8532,7 @@ function renderCatTree(sheet) {
 }
 
 
-// ── 중분류 예산 재합산: 소분류 합이 있으면 소분류 합으로 업데이트 (지정 연도 기준) ──
+// ── 중분류 예산 재합산: 소분류가 있으면 소분류 합으로 업데이트 (0으로 비워진 경우도 반영, 지정 연도 기준) ──
 async function recalcGroupBudget(groupId, year) {
   if (!groupId) return;
   const g = await DB.get('subGroups', groupId);
@@ -8540,8 +8540,9 @@ async function recalcGroupBudget(groupId, year) {
   const allSubs  = await DB.getAll('subItems');
   const gSubs    = allSubs.filter(s => s.subGroupId === groupId);
   const subTotal = gSubs.reduce((s, x) => s + getBudget(x, year), 0);
-  // 소분류에 값이 있을 때만 중분류를 소분류 합으로 업데이트
-  if (subTotal > 0 && getBudget(g, year) !== subTotal) {
+  // 소분류가 하나라도 있으면(값이 전부 0이어도) 중분류를 소분류 합으로 동기화
+  // 소분류가 아예 없을 때만 중분류 직접값을 유지
+  if (gSubs.length > 0 && getBudget(g, year) !== subTotal) {
     setBudget(g, year, subTotal);
     await DB.put('subGroups', g);
   }
@@ -8556,19 +8557,20 @@ async function recalcCatBudget(catId, year) {
   const catGroups = allGroups.filter(g => g.categoryId === catId);
   const catSubs   = allSubs.filter(s => s.categoryId === catId);
 
-  // 중분류별 유효 예산: 소분류 합이 있으면 소분류 합, 없으면 중분류 직접값
+  // 중분류별 유효 예산: 소분류가 있으면 소분류 합(0 포함), 없으면 중분류 직접값
   let grpTotal = 0;
   for (const g of catGroups) {
     const gSubs    = catSubs.filter(s => s.subGroupId === g.id);
     const subTotal = gSubs.reduce((s, x) => s + getBudget(x, year), 0);
-    grpTotal += subTotal > 0 ? subTotal : getBudget(g, year);
+    grpTotal += gSubs.length > 0 ? subTotal : getBudget(g, year);
   }
   const directTotal = catSubs.filter(s => !s.subGroupId).reduce((s,x) => s + getBudget(x, year), 0);
   const total = grpTotal + directTotal;
 
-  // 중분류/소분류에 값이 있을 때만 대분류를 합산값으로 업데이트
-  // 값이 없으면 대분류 직접값 유지
-  if (total > 0 && getBudget(cat, year) !== total) {
+  // 중분류/소분류가 하나라도 있으면(합계가 0이어도) 대분류를 합산값으로 동기화
+  // 중분류/소분류가 아예 없을 때만 대분류 직접값 유지
+  const hasManagedChildren = catGroups.length > 0 || catSubs.length > 0;
+  if (hasManagedChildren && getBudget(cat, year) !== total) {
     setBudget(cat, year, total);
     await DB.put('categories', cat);
   }
@@ -8837,9 +8839,14 @@ async function doDeleteItem(doMove, targetCatId, targetGroupId, targetSubId, tar
   // 실제 삭제
   if (d.type === 'sub') {
     await DB.del('subItems', d.id);
+    // 삭제된 소분류의 예산이 상위 중분류/대분류 합계에 남지 않도록 재계산
+    await recalcGroupBudget(d.groupId, catManageYear);
+    await recalcCatBudget(d.catId, catManageYear);
   } else if (d.type === 'group') {
     for (const s of (d.groupSubs||[])) await DB.del('subItems', s.id);
     await DB.del('subGroups', d.id);
+    // 삭제된 중분류의 예산이 대분류 합계에 남지 않도록 재계산
+    await recalcCatBudget(d.catId, catManageYear);
   } else if (d.type === 'cat') {
     for (const s of subItemsOfCategory(d.id)) await DB.del('subItems', s.id);
     for (const g of subGroupsOfCategory(d.id)) await DB.del('subGroups', g.id);
@@ -8872,6 +8879,9 @@ async function deleteSubWithConfirm(subId, catId, groupId) {
     if (!confirm(`"${item.name}"을 삭제할까요?`)) return;
     await ensureYearSnapshot(new Date().getFullYear());
     await DB.del('subItems', subId);
+    // 삭제된 소분류의 예산이 상위 중분류/대분류 합계에 남지 않도록 재계산
+    await recalcGroupBudget(groupId, catManageYear);
+    await recalcCatBudget(catId, catManageYear);
     await reloadData(); renderCatManageSheet(); renderCurrentPage();
     showToast('삭제됐어요');
     return;
@@ -8892,6 +8902,8 @@ async function deleteGroupWithConfirm(groupId, catId) {
     await ensureYearSnapshot(new Date().getFullYear());
     for (const s of gSubs) await DB.del('subItems', s.id);
     await DB.del('subGroups', groupId);
+    // 삭제된 중분류의 예산이 대분류 합계에 남지 않도록 재계산
+    await recalcCatBudget(catId, catManageYear);
     await reloadData(); renderCatManageSheet();
     showToast('삭제됐어요');
     return;

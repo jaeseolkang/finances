@@ -1,6 +1,6 @@
-// 2026-07-01 KST | CACHE_NAME v2013 (항목관리 연도예산편집 헤더 줄바꿈 버그 수정)
+// 2026-07-01 KST | CACHE_NAME v2014 (예산 재합산 버그 수정: 0으로 비움/삭제 시 상위 중분류·대분류 합계 미반영)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2013';
+const CACHE_NAME = 'gaegyebu-v2014';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

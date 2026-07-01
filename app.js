@@ -311,6 +311,49 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/* =========================================================
+   연도별 예산 헬퍼
+   - 예산 보유 객체(category / subGroup / subItem)는
+     budgets: { [year:number]: amount } 형태로 연도별 예산을 저장.
+   - 구버전 단일 budget 필드는 최초 로드시 budgets로 마이그레이션되어
+     이후 화면에서는 getBudget()/setBudget()만 사용한다.
+   ========================================================= */
+function getBudget(obj, year) {
+  if (!obj) return 0;
+  const y = year != null ? year : new Date().getFullYear();
+  if (obj.budgets && obj.budgets[y] != null) return obj.budgets[y];
+  return 0;
+}
+function setBudget(obj, year, amount) {
+  if (!obj) return;
+  const y = year != null ? year : new Date().getFullYear();
+  if (!obj.budgets) obj.budgets = {};
+  obj.budgets[y] = amount;
+  // 구버전 코드/디버깅 호환용으로 마지막 편집값을 budget 필드에도 동기화
+  obj.budget = amount;
+}
+function migrateBudgetObj(obj) {
+  if (!obj) return obj;
+  if (!obj.budgets) {
+    obj.budgets = {};
+    if (obj.budget > 0) {
+      // 마이그레이션: 연도 구분 없던 기존 예산값을 올해 예산으로 이전
+      obj.budgets[new Date().getFullYear()] = obj.budget;
+    }
+  }
+  return obj;
+}
+// 예산이 하나라도 설정된 모든 연도 + 올해 + 거래가 있는 연도 목록 (오름차순)
+function allBudgetYears() {
+  const years = new Set();
+  years.add(new Date().getFullYear());
+  [...State.categories, ...State.subGroups, ...State.subItems].forEach(o => {
+    if (o.budgets) Object.keys(o.budgets).forEach(y => years.add(Number(y)));
+  });
+  State.transactions.forEach(t => { if (t.date) years.add(Number(t.date.slice(0,4))); });
+  return [...years].sort((a,b) => a-b);
+}
+
 async function seedIfEmpty() {
   const cats = await DB.getAll('categories');
   if (cats.length === 0) {
@@ -666,6 +709,9 @@ async function reloadData() {
     DB.getAll('subGroups'), DB.getAll('transactions'), DB.getAll('linkedAccounts')
   ]);
   cats.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  cats.forEach(migrateBudgetObj);
+  (subItems || []).forEach(migrateBudgetObj);
+  (subGroups || []).forEach(migrateBudgetObj);
   State.categories = cats;
   State.persons = persons;
   State.subItems = subItems;
@@ -1483,11 +1529,11 @@ function renderBudget() {
     for (const l of (t.lines || [])) incBySub[l.subItemId] = (incBySub[l.subItemId] || 0) + l.amount;
   }
 
-  const incomeBudgetCats = State.categories.filter(c => c.type === 'income' && c.budget > 0);
-  const expenseBudgetCats = State.categories.filter(c => c.type === 'expense' && c.budget > 0);
-  const totalIncomeBudget = incomeBudgetCats.reduce((s,c) => s + c.budget, 0);
+  const incomeBudgetCats = State.categories.filter(c => c.type === 'income' && getBudget(c, year) > 0);
+  const expenseBudgetCats = State.categories.filter(c => c.type === 'expense' && getBudget(c, year) > 0);
+  const totalIncomeBudget = incomeBudgetCats.reduce((s,c) => s + getBudget(c, year), 0);
   const totalIncomeSpent = incomeBudgetCats.reduce((s,c) => s + (incByCat[c.id] || 0), 0);
-  const totalExpenseBudget = expenseBudgetCats.reduce((s,c) => s + c.budget, 0);
+  const totalExpenseBudget = expenseBudgetCats.reduce((s,c) => s + getBudget(c, year), 0);
   const totalExpenseSpent = expenseBudgetCats.reduce((s,c) => s + (spentByCat[c.id] || 0), 0);
 
   // 소분류 그룹핑 정의 (대분류명 → { 그룹명: [소분류명...] })
@@ -1505,11 +1551,12 @@ function renderBudget() {
       // 그룹핑 없음 — 소분류 목록만
       return budSubs.map(s => {
         const ss = spentByS[s.id] || 0;
-        const sp = s.budget > 0 ? Math.min(100, Math.round(ss / s.budget * 100)) : 0;
+        const sBud = getBudget(s, year);
+        const sp = sBud > 0 ? Math.min(100, Math.round(ss / sBud * 100)) : 0;
         return `<div style="margin-bottom:5px;">
           <div class="budget-top" style="font-size:12px;">
             <div style="font-weight:600;color:var(--text-1);">${escapeHTML(s.name)}</div>
-            <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(s.budget)}원</div>
+            <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(sBud)}원</div>
           </div>
           <div class="budget-track" style="height:5px;"><div class="budget-fill" style="width:${sp}%; background:${budgetColor(sp)};"></div></div>
         </div>`;
@@ -1527,7 +1574,7 @@ function renderBudget() {
     }
     let html = '';
     for (const [gName, gSubs] of Object.entries(grouped)) {
-      const gTotal = gSubs.reduce((s,x) => s + (x.budget||0), 0);
+      const gTotal = gSubs.reduce((s,x) => s + getBudget(x, year), 0);
       const gSpent = gSubs.reduce((s,x) => s + (spentByS[x.id]||0), 0);
       const gPct = gTotal > 0 ? Math.min(100, Math.round(gSpent/gTotal*100)) : 0;
       const groupKey = c.id + '__' + gName;
@@ -1542,11 +1589,12 @@ function renderBudget() {
         <div class="budget-group-body" data-group-key="${escapeHTML(groupKey)}" style="padding-left:8px;${groupOpen ? '' : 'display:none;'}">
           ${gSubs.map(s => {
             const ss = spentByS[s.id]||0;
-            const sp = s.budget>0 ? Math.min(100,Math.round(ss/s.budget*100)) : 0;
+            const sBud = getBudget(s, year);
+            const sp = sBud>0 ? Math.min(100,Math.round(ss/sBud*100)) : 0;
             return `<div style="margin-bottom:4px;">
               <div class="budget-top" style="font-size:11px;">
                 <div style="color:var(--text-1);">${escapeHTML(s.name)}</div>
-                <div class="budget-nums tabular" style="font-size:11px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(s.budget)}원</div>
+                <div class="budget-nums tabular" style="font-size:11px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(sBud)}원</div>
               </div>
               <div class="budget-track" style="height:4px;"><div class="budget-fill" style="width:${sp}%; background:${budgetColor(sp)};"></div></div>
             </div>`;
@@ -1557,11 +1605,12 @@ function renderBudget() {
     }
     for (const s of ungrouped) {
       const ss = spentByS[s.id]||0;
-      const sp = s.budget>0 ? Math.min(100,Math.round(ss/s.budget*100)) : 0;
+      const sBud = getBudget(s, year);
+      const sp = sBud>0 ? Math.min(100,Math.round(ss/sBud*100)) : 0;
       html += `<div style="margin-bottom:5px;">
         <div class="budget-top" style="font-size:12px;">
           <div style="font-weight:600;color:var(--text-1);">${escapeHTML(s.name)}</div>
-          <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(s.budget)}원</div>
+          <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(sBud)}원</div>
         </div>
         <div class="budget-track" style="height:5px;"><div class="budget-fill" style="width:${sp}%; background:${budgetColor(sp)};"></div></div>
       </div>`;
@@ -1578,10 +1627,10 @@ function renderBudget() {
       if (hasGroups) {
         // 헌금 대분류: 공통 소분류(헌금종류)별 예산/실적
         const commonSubs = subItemsOfCategory(c.id).filter(s => !s.subGroupId);
-        const budSubs = commonSubs.filter(s => s.budget > 0);
+        const budSubs = commonSubs.filter(s => getBudget(s, year) > 0);
         // 실적: 이 대분류 전체 거래의 line별 subItem 합산
         const catSpent = incByCat[c.id] || 0;
-        const catBudget = c.budget || budSubs.reduce((s,x) => s + (x.budget||0), 0);
+        const catBudget = getBudget(c, year) || budSubs.reduce((s,x) => s + getBudget(x, year), 0);
         const catPct = catBudget > 0 ? Math.min(100, Math.round(catSpent / catBudget * 100)) : 0;
         return `<div class="budget-item" style="margin-bottom:14px;">
           <div class="budget-cat-header" data-cat-id="${c.id}" style="cursor:pointer;user-select:none;">
@@ -1596,11 +1645,12 @@ function renderBudget() {
             ${budSubs.length > 0 ? `<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--border);">
               ${budSubs.map(s => {
                 const ss = incBySub[s.id] || 0;
-                const sp = s.budget > 0 ? Math.min(100, Math.round(ss / s.budget * 100)) : 0;
+                const sBud = getBudget(s, year);
+                const sp = sBud > 0 ? Math.min(100, Math.round(ss / sBud * 100)) : 0;
                 return `<div style="margin-bottom:5px;">
                   <div class="budget-top" style="font-size:12px;">
                     <div style="font-weight:600;color:var(--text-1);">${escapeHTML(s.name)}</div>
-                    <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(s.budget)}원</div>
+                    <div class="budget-nums tabular" style="font-size:12px;"><b>${fmtMoney(ss)}</b> / ${fmtMoney(sBud)}원</div>
                   </div>
                   <div class="budget-track" style="height:5px;"><div class="budget-fill" style="width:${sp}%; background:${budgetColor(sp)};"></div></div>
                 </div>`;
@@ -1611,13 +1661,14 @@ function renderBudget() {
       } else {
         // 이자/기타: 기존 방식 (대분류 + 소분류)
         const spent = incByCat[c.id] || 0;
-        const pct = c.budget > 0 ? Math.min(100, Math.round(spent / c.budget * 100)) : 0;
-        const budSubs = subItemsOfCategory(c.id).filter(s => s.budget > 0);
+        const cBud = getBudget(c, year);
+        const pct = cBud > 0 ? Math.min(100, Math.round(spent / cBud * 100)) : 0;
+        const budSubs = subItemsOfCategory(c.id).filter(s => getBudget(s, year) > 0);
         return `<div class="budget-item" style="margin-bottom:14px;">
           <div class="budget-cat-header" data-cat-id="${c.id}" style="cursor:pointer;user-select:none;">
             <div class="budget-top">
               <div class="budget-name"><span style="font-size:15px;">${c.icon}</span> ${c.name}${budSubs.length > 0 ? ` <span style="font-size:11px;color:var(--text-3);">${catOpen ? '▾' : '▸'}</span>` : ''}</div>
-              <div class="budget-nums tabular"><b>${fmtMoney(spent)}</b> / ${fmtMoney(c.budget)}원</div>
+              <div class="budget-nums tabular"><b>${fmtMoney(spent)}</b> / ${fmtMoney(cBud)}원</div>
             </div>
             <div class="budget-track"><div class="budget-fill" style="width:${pct}%; background:${budgetColor(pct)};"></div></div>
             <div style="font-size:11px;color:var(--text-3);text-align:right;margin-top:2px;">${pct}%</div>
@@ -1637,14 +1688,15 @@ function renderBudget() {
     if (budgetCats.length === 0) return `<div style="font-size:13px;color:var(--text-3);padding:12px 2px;">설정된 예산이 없어요</div>`;
     return budgetCats.map(c => {
       const spent = spentByC[c.id] || 0;
-      const pct = c.budget > 0 ? Math.min(100, Math.round(spent / c.budget * 100)) : 0;
-      const budSubs = subItemsOfCategory(c.id).filter(s => s.budget > 0);
+      const cBud = getBudget(c, year);
+      const pct = cBud > 0 ? Math.min(100, Math.round(spent / cBud * 100)) : 0;
+      const budSubs = subItemsOfCategory(c.id).filter(s => getBudget(s, year) > 0);
       const catOpen = !!State.budgetExpanded[c.id];
       return `<div class="budget-item" style="margin-bottom:14px;">
         <div class="budget-cat-header" data-cat-id="${c.id}" style="cursor:pointer;user-select:none;">
           <div class="budget-top">
             <div class="budget-name"><span style="font-size:15px;">${c.icon}</span> ${c.name}${budSubs.length > 0 ? ` <span style="font-size:11px;color:var(--text-3);">${catOpen ? '▾' : '▸'}</span>` : ''}</div>
-            <div class="budget-nums tabular"><b>${fmtMoney(spent)}</b> / ${fmtMoney(c.budget)}원</div>
+            <div class="budget-nums tabular"><b>${fmtMoney(spent)}</b> / ${fmtMoney(cBud)}원</div>
           </div>
           <div class="budget-track"><div class="budget-fill" style="width:${pct}%; background:${budgetColor(pct)};"></div></div>
           <div style="font-size:11px;color:var(--text-3);text-align:right;margin-top:2px;">${pct}%</div>
@@ -1665,7 +1717,7 @@ function renderBudget() {
     </div>
     <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:10px; box-shadow:var(--shadow); color:var(--text-1); margin-bottom:14px;">
       <button id="prevYear" style="color:var(--text-2);">${ICONS.chevLeft}</button>
-      <span style="font-weight:700;">${year}년 연간 예산</span>
+      <button id="budgetYearLabel" style="background:none;border:none;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px;">${year}년 연간 예산 <span style="font-size:11px;color:var(--text-3);">▾</span></button>
       <button id="nextYear" style="color:var(--text-2);">${ICONS.chevRight}</button>
     </div>
 
@@ -1718,7 +1770,44 @@ function renderBudget() {
   `;
   page.querySelector('#prevYear').addEventListener('click', () => changeMonth(-12));
   page.querySelector('#nextYear').addEventListener('click', () => changeMonth(12));
-  page.querySelector('#manageCatsBtn').addEventListener('click', () => openCatManageSheet());
+  page.querySelector('#manageCatsBtn').addEventListener('click', () => openCatManageSheet(year));
+
+  // 연도 레이블 클릭 → 연도 리스트 팝업
+  page.querySelector('#budgetYearLabel').addEventListener('click', () => {
+    const existing = document.getElementById('budgetYearPop');
+    if (existing) { existing.remove(); return; }
+
+    const years = allBudgetYears();
+    // 목록에 없으면 최근 연도까지 포함해서 선택폭 넓혀줌
+    for (let y = year - 5; y <= year + 1; y++) if (!years.includes(y)) years.push(y);
+    years.sort((a,b) => a-b);
+
+    const pop = document.createElement('div');
+    pop.id = 'budgetYearPop';
+    pop.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+    pop.innerHTML = `
+      <div style="background:var(--card);border-radius:20px;padding:20px;width:280px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+        <div style="font-size:15px;font-weight:700;color:var(--text-1);margin-bottom:14px;text-align:center;">연도 선택</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:260px;overflow-y:auto;">
+          ${years.map(y => `
+            <button data-year="${y}" style="padding:10px 4px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:${y===year?'700':'400'};background:${y===year?'var(--primary)':'var(--card)'};color:${y===year?'#fff':'var(--text-1)'};cursor:pointer;">${y}년</button>
+          `).join('')}
+        </div>
+        <button id="budgetYearPopClose" style="width:100%;margin-top:16px;padding:11px;border-radius:12px;background:var(--surface-2);border:none;font-size:14px;font-weight:600;color:var(--text-1);">닫기</button>
+      </div>`;
+    document.body.appendChild(pop);
+
+    pop.querySelectorAll('[data-year]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const selYear = Number(btn.dataset.year);
+        State.cursorDate = new Date(selYear, State.cursorDate.getMonth(), 1);
+        pop.remove();
+        renderBudget();
+      });
+    });
+    pop.querySelector('#budgetYearPopClose').addEventListener('click', () => pop.remove());
+    pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+  });
 
   // 대분류 접기/펼치기
   page.querySelectorAll('.budget-cat-header').forEach(el => {
@@ -7508,13 +7597,15 @@ function openLinkedAccountEditSheet(acct, kind) {
 }
 
 let catManageSelGroupId = null; // 선택된 중분류 id
+let catManageYear = new Date().getFullYear(); // 항목 관리에서 편집 중인 예산 연도
 
-function openCatManageSheet() {
+function openCatManageSheet(year) {
   catManageType = 'expense';
   catManageExpanded = new Set();
   catManageLevel = 1;
   catManageSelCatId = null;
   catManageSelGroupId = null;
+  catManageYear = year != null ? year : new Date().getFullYear();
   renderCatManageSheet();
   openSheet('catManageSheet');
 }
@@ -7527,19 +7618,21 @@ function renderCatManageSheet() {
 // ── 항목 관리 트리 ──
 function renderCatTree(sheet) {
   const cats = State.categories.filter(c => c.type === catManageType);
-  const totalBudget = cats.reduce((s, c) => s + (c.budget || 0), 0);
+  const year = catManageYear;
+  const totalBudget = cats.reduce((s, c) => s + getBudget(c, year), 0);
   const isIncome = catManageType === 'income';
   const accent = isIncome ? 'var(--income)' : 'var(--expense)';
   const accentBg = isIncome ? 'var(--income-light,#f0fdf4)' : 'var(--expense-light,#fff5f5)';
 
   function subRowHTML(s, catId) {
+    const sBud = getBudget(s, year);
     return `<div class="cattree-leaf" style="${s.hidden?'opacity:0.45;':''}display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:5px 0 5px 40px;border-bottom:1px solid var(--border);">
       <span style="flex:1;font-size:13px;">${s.hidden?'🚫 ':''}${escapeHTML(s.name)}</span>
       <label style="display:flex;align-items:center;gap:3px;font-size:12px;color:var(--primary);cursor:pointer;white-space:nowrap;font-weight:600;">
         <input type="checkbox" data-primary-id="${s.id}" ${s.isPrimary!==false?'checked':''} style="width:16px;height:16px;accent-color:var(--primary);">기본
       </label>
       <div style="display:flex;align-items:center;gap:3px;">
-        <input type="text" inputmode="numeric" data-budget-id="${s.id}" data-cat-id="${catId}" value="${s.budget?fmtMoney(s.budget):''}" placeholder="연간예산" style="width:70px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;">
+        <input type="text" inputmode="numeric" data-budget-id="${s.id}" data-cat-id="${catId}" value="${sBud?fmtMoney(sBud):''}" placeholder="${year}년 예산" style="width:70px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;">
         <span style="font-size:11px;color:var(--text-3);">원</span>
       </div>
       <button class="grip" data-rename-sub="${s.id}">${ICONS.edit}</button>
@@ -7550,9 +7643,10 @@ function renderCatTree(sheet) {
   function groupBlockHTML(g, catId) {
     const gSubs = subItemsOfGroup(g.id);
     const expanded = catManageExpanded.has(g.id);
-    const subTotal = gSubs.reduce((s,x) => s+(x.budget||0), 0);
+    const subTotal = gSubs.reduce((s,x) => s + getBudget(x, year), 0);
     // 소분류 합이 있으면 소분류 합 표시, 없으면 중분류 직접 입력값
-    const grpBudgetVal = subTotal > 0 ? subTotal : (g.budget||0);
+    const gBud = getBudget(g, year);
+    const grpBudgetVal = subTotal > 0 ? subTotal : gBud;
     return `<div class="cattree-group-block" data-group-id="${g.id}">
       <div class="catrow" style="padding:6px 0 6px 20px;border-bottom:1px solid var(--border);cursor:pointer;" data-toggle-group="${g.id}">
         <span style="font-size:13px;margin-right:4px;transition:transform .2s;display:inline-block;transform:rotate(${expanded?'90':'0'}deg);">›</span>
@@ -7562,7 +7656,7 @@ function renderCatTree(sheet) {
           <input type="text" inputmode="numeric"
             data-group-budget-id="${g.id}" data-cat-id="${catId}"
             value="${grpBudgetVal ? fmtMoney(grpBudgetVal) : ''}"
-            placeholder="중분류예산"
+            placeholder="${year}년 예산"
             style="width:80px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;${subTotal > 0 ? 'background:var(--bg-2);' : ''}">
           <span style="font-size:11px;color:var(--text-3);">원</span>
         </div>
@@ -7584,6 +7678,7 @@ function renderCatTree(sheet) {
     const groups = subGroupsOfCategory(c.id);
     const subs = subItemsOfCategory(c.id).filter(s => !s.subGroupId);
     const expanded = catManageExpanded.has(c.id);
+    const cBud = getBudget(c, year);
     return `<div class="cattree-cat-block" data-cat-id="${c.id}" style="border-bottom:1px solid var(--border);">
       <div class="catrow" style="padding:6px 0;cursor:pointer;" data-toggle-cat="${c.id}">
         <span style="font-size:14px;margin-right:4px;transition:transform .2s;display:inline-block;transform:rotate(${expanded?'90':'0'}deg);">›</span>
@@ -7592,7 +7687,7 @@ function renderCatTree(sheet) {
         <div style="display:flex;align-items:center;gap:3px;margin-right:4px;">
           <input type="text" inputmode="numeric"
             data-cat-budget-id="${c.id}"
-            value="${c.budget ? fmtMoney(c.budget) : ''}"
+            value="${cBud ? fmtMoney(cBud) : ''}"
             placeholder="미설정"
             style="width:72px;padding:2px 5px;border:1px solid var(--border);border-radius:6px;font-size:11px;text-align:right;${(subGroupsOfCategory(c.id).length > 0 || subItemsOfCategory(c.id).length > 0) ? 'background:var(--bg-2);' : ''}">
           <span style="font-size:11px;color:var(--text-3);">원</span>
@@ -7637,8 +7732,13 @@ function renderCatTree(sheet) {
         <button data-type="expense" class="${catManageType==='expense'?'active':''}">지출 항목</button>
         <button data-type="income" class="${catManageType==='income'?'active':''}">수입 항목</button>
       </div>
+      <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:8px; box-shadow:var(--shadow); color:var(--text-1); margin-bottom:10px;">
+        <button id="catMPrevYear" style="color:var(--text-2);">${ICONS.chevLeft}</button>
+        <button id="catMYearLabel" style="background:none;border:none;font-size:14px;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px;">${year}년 예산 편집 <span style="font-size:11px;color:var(--text-3);">▾</span></button>
+        <button id="catMNextYear" style="color:var(--text-2);">${ICONS.chevRight}</button>
+      </div>
       <div style="background:${accentBg};border-radius:10px;padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-size:12px;font-weight:800;color:${accent};">${isIncome?'수입':'지출'} 연간 예산 합계</div>
+        <div style="font-size:12px;font-weight:800;color:${accent};">${isIncome?'수입':'지출'} ${year}년 예산 합계</div>
         <div style="font-size:17px;font-weight:900;color:${accent};" class="tabular">${totalBudget>0?fmtMoney(totalBudget)+'원':'미설정'}</div>
       </div>
       <div class="card" style="padding:4px 14px;">
@@ -7655,6 +7755,40 @@ function renderCatTree(sheet) {
     b.addEventListener('click', () => { catManageType = b.dataset.type; renderCatManageSheet(); });
   });
   sheet.querySelector('#catAddNew').addEventListener('click', () => openCatEditSheet(null));
+
+  // 연도 이동
+  sheet.querySelector('#catMPrevYear').addEventListener('click', () => { catManageYear -= 1; renderCatManageSheet(); });
+  sheet.querySelector('#catMNextYear').addEventListener('click', () => { catManageYear += 1; renderCatManageSheet(); });
+  sheet.querySelector('#catMYearLabel').addEventListener('click', () => {
+    const existing = document.getElementById('catMYearPop');
+    if (existing) { existing.remove(); return; }
+    const years = allBudgetYears();
+    for (let y = year - 5; y <= year + 1; y++) if (!years.includes(y)) years.push(y);
+    years.sort((a,b) => a-b);
+    const pop = document.createElement('div');
+    pop.id = 'catMYearPop';
+    pop.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+    pop.innerHTML = `
+      <div style="background:var(--card);border-radius:20px;padding:20px;width:280px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+        <div style="font-size:15px;font-weight:700;color:var(--text-1);margin-bottom:14px;text-align:center;">예산 편집 연도 선택</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-height:260px;overflow-y:auto;">
+          ${years.map(y => `
+            <button data-year="${y}" style="padding:10px 4px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:${y===year?'700':'400'};background:${y===year?'var(--primary)':'var(--card)'};color:${y===year?'#fff':'var(--text-1)'};cursor:pointer;">${y}년</button>
+          `).join('')}
+        </div>
+        <button id="catMYearPopClose" style="width:100%;margin-top:16px;padding:11px;border-radius:12px;background:var(--surface-2);border:none;font-size:14px;font-weight:600;color:var(--text-1);">닫기</button>
+      </div>`;
+    document.body.appendChild(pop);
+    pop.querySelectorAll('[data-year]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        catManageYear = Number(btn.dataset.year);
+        pop.remove();
+        renderCatManageSheet();
+      });
+    });
+    pop.querySelector('#catMYearPopClose').addEventListener('click', () => pop.remove());
+    pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+  });
 
   // 대분류 토글
   sheet.querySelectorAll('[data-toggle-cat]').forEach(el => {
@@ -7797,11 +7931,11 @@ function renderCatTree(sheet) {
       const item = await DB.get('subItems', subId);
       if (!item) return;
       const newVal = Number(rawDigits(input.value)) || 0;
-      if (item.budget === newVal) return;
-      item.budget = newVal;
+      if (getBudget(item, catManageYear) === newVal) return;
+      setBudget(item, catManageYear, newVal);
       await DB.put('subItems', item);
-      await recalcGroupBudget(item.subGroupId);
-      await recalcCatBudget(catId);
+      await recalcGroupBudget(item.subGroupId, catManageYear);
+      await recalcCatBudget(catId, catManageYear);
       await reloadData(); renderCurrentPage();
       showToast('예산 저장됐어요');
     };
@@ -7819,10 +7953,10 @@ function renderCatTree(sheet) {
       const g = await DB.get('subGroups', grpId);
       if (!g) return;
       const newVal = Number(rawDigits(input.value)) || 0;
-      if (g.budget === newVal) return;
-      g.budget = newVal;
+      if (getBudget(g, catManageYear) === newVal) return;
+      setBudget(g, catManageYear, newVal);
       await DB.put('subGroups', g);
-      await recalcCatBudget(catId);
+      await recalcCatBudget(catId, catManageYear);
       await reloadData(); renderCurrentPage();
       showToast('예산 저장됐어요');
     };
@@ -7839,8 +7973,8 @@ function renderCatTree(sheet) {
       const cat = await DB.get('categories', catId);
       if (!cat) return;
       const newVal = Number(rawDigits(input.value)) || 0;
-      if (cat.budget === newVal) return;
-      cat.budget = newVal;
+      if (getBudget(cat, catManageYear) === newVal) return;
+      setBudget(cat, catManageYear, newVal);
       await DB.put('categories', cat);
       await reloadData(); renderCurrentPage();
       showToast('예산 저장됐어요');
@@ -7872,23 +8006,23 @@ function renderCatTree(sheet) {
 }
 
 
-// ── 중분류 예산 재합산: 소분류 합이 있으면 소분류 합으로 업데이트 ──
-async function recalcGroupBudget(groupId) {
+// ── 중분류 예산 재합산: 소분류 합이 있으면 소분류 합으로 업데이트 (지정 연도 기준) ──
+async function recalcGroupBudget(groupId, year) {
   if (!groupId) return;
   const g = await DB.get('subGroups', groupId);
   if (!g) return;
   const allSubs  = await DB.getAll('subItems');
   const gSubs    = allSubs.filter(s => s.subGroupId === groupId);
-  const subTotal = gSubs.reduce((s, x) => s + (x.budget||0), 0);
+  const subTotal = gSubs.reduce((s, x) => s + getBudget(x, year), 0);
   // 소분류에 값이 있을 때만 중분류를 소분류 합으로 업데이트
-  if (subTotal > 0 && g.budget !== subTotal) {
-    g.budget = subTotal;
+  if (subTotal > 0 && getBudget(g, year) !== subTotal) {
+    setBudget(g, year, subTotal);
     await DB.put('subGroups', g);
   }
 }
 
-// ── 대분류 예산 재합산: 소분류합 + 중분류직접입력합 (소분류가 있는 중분류는 소분류합 우선) ──
-async function recalcCatBudget(catId) {
+// ── 대분류 예산 재합산: 소분류합 + 중분류직접입력합 (소분류가 있는 중분류는 소분류합 우선, 지정 연도 기준) ──
+async function recalcCatBudget(catId, year) {
   const cat = await DB.get('categories', catId);
   if (!cat) return;
   const allSubs   = await DB.getAll('subItems');
@@ -7900,16 +8034,16 @@ async function recalcCatBudget(catId) {
   let grpTotal = 0;
   for (const g of catGroups) {
     const gSubs    = catSubs.filter(s => s.subGroupId === g.id);
-    const subTotal = gSubs.reduce((s, x) => s + (x.budget||0), 0);
-    grpTotal += subTotal > 0 ? subTotal : (g.budget||0);
+    const subTotal = gSubs.reduce((s, x) => s + getBudget(x, year), 0);
+    grpTotal += subTotal > 0 ? subTotal : getBudget(g, year);
   }
-  const directTotal = catSubs.filter(s => !s.subGroupId).reduce((s,x) => s+(x.budget||0), 0);
+  const directTotal = catSubs.filter(s => !s.subGroupId).reduce((s,x) => s + getBudget(x, year), 0);
   const total = grpTotal + directTotal;
 
   // 중분류/소분류에 값이 있을 때만 대분류를 합산값으로 업데이트
   // 값이 없으면 대분류 직접값 유지
-  if (total > 0 && cat.budget !== total) {
-    cat.budget = total;
+  if (total > 0 && getBudget(cat, year) !== total) {
+    setBudget(cat, year, total);
     await DB.put('categories', cat);
   }
 }
@@ -7923,8 +8057,8 @@ function attachSubItemEvents(sheet, catId, groupId) {
       const item = await DB.get('subItems', subId);
       if (!item) return;
       const newVal = Number(rawDigits(input.value)) || 0;
-      if (item.budget === newVal) return;
-      item.budget = newVal;
+      if (getBudget(item, catManageYear) === newVal) return;
+      setBudget(item, catManageYear, newVal);
       await DB.put('subItems', item);
       // 중분류 예산 재합산 (있는 경우)
       if (item.subGroupId) {
@@ -7932,11 +8066,11 @@ function attachSubItemEvents(sheet, catId, groupId) {
         if (g) {
           const allSubs = await DB.getAll('subItems');
           const gSubs   = allSubs.filter(s => s.subGroupId === g.id);
-          const gTotal  = gSubs.reduce((s, sub) => s + (sub.id === subId ? newVal : (sub.budget||0)), 0);
-          if (g.budget !== gTotal) { g.budget = gTotal; await DB.put('subGroups', g); }
+          const gTotal  = gSubs.reduce((s, sub) => s + (sub.id === subId ? newVal : getBudget(sub, catManageYear)), 0);
+          if (getBudget(g, catManageYear) !== gTotal) { setBudget(g, catManageYear, gTotal); await DB.put('subGroups', g); }
         }
       }
-      await recalcCatBudget(catId);
+      await recalcCatBudget(catId, catManageYear);
       await reloadData(); renderCurrentPage();
       showToast('예산 저장됐어요');
     };
@@ -8276,7 +8410,7 @@ const COLOR_PALETTE = ['#E5484D','#F08C3A','#F0A93A','#1FAA59','#10B981','#0EA5E
 function openCatEditSheet(catId) {
   const editing = catId ? catById(catId) : null;
   const sheet = document.getElementById('catEditSheet');
-  const draft = editing ? { ...editing } : { type: catManageType, name: '', icon: ICON_PALETTE[0], color: COLOR_PALETTE[0], budget: 0, usePersonLevel: false };
+  const draft = editing ? { ...editing } : { type: catManageType, name: '', icon: ICON_PALETTE[0], color: COLOR_PALETTE[0], budgets: {}, usePersonLevel: false };
 
   function paint() {
     sheet.innerHTML = `
@@ -8313,9 +8447,9 @@ function openCatEditSheet(catId) {
         </div>
         ${draft.type === 'expense' ? `
           <div class="formrow">
-            <label>연간 예산 (선택, 0이면 미설정)</label>
+            <label>${catManageYear}년 연간 예산 (선택, 0이면 미설정)</label>
             <div class="amt-input-wrap" id="budgetWrap">
-              <input type="text" inputmode="numeric" id="catBudget" placeholder="0" value="${draft.budget ? fmtMoney(draft.budget) : ''}">
+              <input type="text" inputmode="numeric" id="catBudget" placeholder="0" value="${getBudget(draft, catManageYear) ? fmtMoney(getBudget(draft, catManageYear)) : ''}">
               <span class="won">원</span>
             </div>
           </div>
@@ -8337,7 +8471,7 @@ function openCatEditSheet(catId) {
         ${editing ? `<button class="btn-secondary" id="catDelete" style="color:var(--expense);">대분류 삭제</button>` : ''}
       </div>
     `;
-    sheet.querySelector('#catEClose').addEventListener('click', () => { closeAllSheets(); openCatManageSheet(); });
+    sheet.querySelector('#catEClose').addEventListener('click', () => { closeAllSheets(); openCatManageSheet(catManageYear); });
     sheet.querySelectorAll('.iconpick').forEach(b => {
       b.addEventListener('click', () => { draft.icon = b.dataset.icon; paint(); });
     });
@@ -8365,7 +8499,8 @@ function openCatEditSheet(catId) {
       if (!name) { showToast('이름을 입력해주세요'); return; }
       draft.name = name;
       if (draft.type === 'expense') {
-        draft.budget = Number(rawDigits(sheet.querySelector('#catBudget').value)) || 0;
+        const newVal = Number(rawDigits(sheet.querySelector('#catBudget').value)) || 0;
+        setBudget(draft, catManageYear, newVal);
       }
       const isNew = !editing;
       if (isNew) { draft.id = uid(); draft.order = State.categories.length; }
@@ -8385,7 +8520,7 @@ function openCatEditSheet(catId) {
 
       await reloadData();
       closeAllSheets();
-      openCatManageSheet();
+      openCatManageSheet(catManageYear);
       renderCurrentPage();
       showToast(editing ? '수정되었습니다' : `'${draft.name}' 대분류가 추가되었습니다`);
     });
@@ -8401,7 +8536,7 @@ function openCatEditSheet(catId) {
         for (const p of personsOfCategory(editing.id)) await DB.del('persons', p.id);
         await reloadData();
         closeAllSheets();
-        openCatManageSheet();
+        openCatManageSheet(catManageYear);
         renderCurrentPage();
         showToast('삭제되었습니다');
       });
@@ -8447,7 +8582,7 @@ function renderCatSubSheet(categoryId, mode) {
                 <input type="checkbox" data-primary-id="${item.id}" ${item.isPrimary!==false?'checked':''} style="width:15px;height:15px;cursor:pointer;">
                 기본
               </label>
-              <input type="text" inputmode="numeric" data-budget-id="${item.id}" value="${item.budget ? fmtMoney(item.budget) : ''}" placeholder="연간예산" style="width:80px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;">
+              <input type="text" inputmode="numeric" data-budget-id="${item.id}" value="${getBudget(item, catManageYear) ? fmtMoney(getBudget(item, catManageYear)) : ''}" placeholder="${catManageYear}년 예산" style="width:80px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;">
               <span style="color:var(--text-3);">원</span>
             </div>` : ''}
             <button class="grip" data-rename="${item.id}">${ICONS.edit}</button>
@@ -8472,16 +8607,16 @@ function renderCatSubSheet(categoryId, mode) {
         const item = list.find(x => x.id === input.dataset.budgetId);
         if (!item) return;
         const newVal = Number(rawDigits(input.value)) || 0;
-        if (item.budget === newVal) return;
-        item.budget = newVal;
+        if (getBudget(item, catManageYear) === newVal) return;
+        setBudget(item, catManageYear, newVal);
         await DB.put('subItems', item);
         // 대분류 예산 = 소분류 예산 합산
         const allSubs = subItemsOfCategory(categoryId);
         const updatedSubs = allSubs.map(s => s.id === item.id ? item : s);
-        const catTotal = updatedSubs.reduce((s, sub) => s + (sub.budget || 0), 0);
+        const catTotal = updatedSubs.reduce((s, sub) => s + getBudget(sub, catManageYear), 0);
         const catObj = catById(categoryId);
         if (catObj) {
-          catObj.budget = catTotal;
+          setBudget(catObj, catManageYear, catTotal);
           await DB.put('categories', catObj);
         }
         await reloadData();

@@ -4712,8 +4712,8 @@ function renderSettings() {
   page.querySelector('#rowCats').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openCatManageSheet(); });
   page.querySelector('#rowItemStructure').addEventListener('click', () => openItemStructureSheet());
   page.querySelector('#rowExportExcel').addEventListener('click', exportExcel);
-  page.querySelector('#rowExport').addEventListener('click', openBackupRangeSheet);
-  page.querySelector('#rowEmailBackup').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } sendBackupByEmail(); });
+  page.querySelector('#rowExport').addEventListener('click', () => openBackupRangeSheet('download'));
+  page.querySelector('#rowEmailBackup').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openBackupRangeSheet('email'); });
   // 로그아웃
   const btnLogout = page.querySelector('#btnLogout');
   if (btnLogout) {
@@ -5580,11 +5580,11 @@ function availableDateRangeFromTx() {
   return { min, max };
 }
 
-let excelMode = 'monthly'; // 'monthly' | 'custom'
+let excelMode = 'all'; // 'all' | 'monthly' | 'custom'
 
 function openExcelRangeSheet() {
   if (State.transactions.length === 0) { showToast('내보낼 거래가 없어요'); return; }
-  excelMode = 'monthly';
+  excelMode = 'all';
   renderExcelRangeSheet();
   openSheet('excelRangeSheet');
 }
@@ -5607,11 +5607,14 @@ function renderExcelRangeSheet() {
     </div>
     <div class="sheet-body">
       <div class="segctrl">
+        <button data-mode="all"     class="${excelMode==='all'    ?'active':''}">전체</button>
         <button data-mode="monthly" class="${excelMode==='monthly'?'active':''}">월간</button>
         <button data-mode="custom"  class="${excelMode==='custom' ?'active':''}">지정기간</button>
       </div>
 
-      ${excelMode === 'monthly' ? `
+      ${excelMode === 'all' ? `
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">전체 기간의 모든 달을 정식 교회 결산 양식으로, 달별로 나누어 만들어요.</div>
+      ` : excelMode === 'monthly' ? `
       <div class="formrow">
         <label>월 선택</label>
         <select class="dateinput" id="excMSingle">${optionHTML}</select>
@@ -5655,7 +5658,7 @@ function renderExcelRangeSheet() {
   // 초기값 설정
   if (excelMode === 'monthly') {
     sheet.querySelector('#excMSingle').value = months[months.length - 1];
-  } else {
+  } else if (excelMode === 'custom') {
     // 날일 select 채우기 함수
     const fillDays = (ySel, mSel, dSel, defaultDay) => {
       const y = Number(ySel.value), m = Number(mSel.value);
@@ -5708,11 +5711,16 @@ function renderExcelRangeSheet() {
       return;
     }
 
-    // 월간
-    const sYm = sheet.querySelector('#excMSingle').value;
-    const eYm = sYm;
-    let [sy, sm] = sYm.split('-').map(Number);
-    let [ey, em] = eYm.split('-').map(Number);
+    // 전체 / 월간 — 정식 결산 양식
+    let sy, sm, ey, em;
+    if (excelMode === 'all') {
+      [sy, sm] = months[0].split('-').map(Number);
+      [ey, em] = months[months.length - 1].split('-').map(Number);
+    } else {
+      const sYm = sheet.querySelector('#excMSingle').value;
+      [sy, sm] = sYm.split('-').map(Number);
+      ey = sy; em = sm;
+    }
 
     const monthsRange = buildMonthRange(sy, sm, ey, em);
     const yearsNeeded = Array.from(new Set(monthsRange.map(m => m.year)));
@@ -5723,7 +5731,9 @@ function renderExcelRangeSheet() {
       carryoverByYear[y] = amt;
     }
     const wb = generateChurchLedgerWorkbook(monthsRange, carryoverByYear);
-    const fname = (sYm === eYm) ? `회계부-${sYm}.xlsx` : `회계부-${sYm}_${eYm}.xlsx`;
+    const fname = excelMode === 'all'
+      ? `회계부-전체_${todayStr()}.xlsx`
+      : `회계부-${sy}-${String(sm).padStart(2,'0')}.xlsx`;
     XLSX.writeFile(wb, fname);
     closeAllSheets();
     showToast('엑셀 내보내기 완료');
@@ -5890,10 +5900,19 @@ function generateChurchLedgerWorkbook(months, carryoverByYear) {
 }
 
 let backupMode = 'all'; // 'all' | 'single' | 'range'
+let backupAction = 'download'; // 'download' | 'email'
 
-function openBackupRangeSheet() {
+async function openBackupRangeSheet(action = 'download') {
   if (State.transactions.length === 0) { showToast('내보낼 거래가 없어요'); return; }
+  if (action === 'email') {
+    const emailRec = await DB.get('settings', 'maturityEmail');
+    if (!emailRec || !emailRec.email) {
+      showToast('설정에서 이메일을 먼저 등록해주세요');
+      return;
+    }
+  }
   backupMode = 'all';
+  backupAction = action;
   renderBackupRangeSheet();
   openSheet('backupRangeSheet');
 }
@@ -5906,28 +5925,29 @@ function renderBackupRangeSheet() {
     const [y, m] = ym.split('-');
     return `<option value="${ym}">${y}년 ${Number(m)}월</option>`;
   }).join('');
+  const isEmail = backupAction === 'email';
 
   sheet.innerHTML = `
     <div class="sheet-handle"></div>
     <div class="sheet-head">
-      <h3>데이터 백업</h3>
+      <h3>${isEmail ? '백업 메일 발송' : '데이터 백업'}</h3>
       <button id="bkClose" class="sheet-close-btn">${ICONS.close}닫기</button>
     </div>
     <div class="sheet-body">
       <div class="segctrl">
-        <button data-mode="all"    class="${backupMode==='all'   ?'active':''}">전체 백업</button>
+        <button data-mode="all"    class="${backupMode==='all'   ?'active':''}">${isEmail ? '전체' : '전체 백업'}</button>
         <button data-mode="single" class="${backupMode==='single'?'active':''}">개별 달</button>
         <button data-mode="range"  class="${backupMode==='range' ?'active':''}">범위 설정</button>
       </div>
 
       ${backupMode === 'all' ? `
-      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">전체 기간의 모든 거래 데이터와 카테고리/이름 정보가 저장됩니다.</div>
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">전체 기간의 모든 거래 데이터와 카테고리/이름 정보가 ${isEmail ? '메일로 발송됩니다.' : '저장됩니다.'}</div>
       ` : backupMode === 'single' ? `
       <div class="formrow">
-        <label>백업할 달</label>
+        <label>${isEmail ? '발송할 달' : '백업할 달'}</label>
         <select class="dateinput" id="bkSingle">${optionHTML}</select>
       </div>
-      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 달의 거래 데이터와 모든 카테고리/이름 정보가 함께 저장됩니다.</div>
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 달의 거래 데이터와 모든 카테고리/이름 정보가 함께 ${isEmail ? '발송됩니다.' : '저장됩니다.'}</div>
       ` : `
       <div class="formrow">
         <label>시작일</label>
@@ -5939,10 +5959,10 @@ function renderBackupRangeSheet() {
         <input type="date" class="dateinput" id="bkEnd"
           ${dateRange ? `min="${dateRange.min}" max="${dateRange.max}"` : ''}>
       </div>
-      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 기간(연-월-일)의 거래 데이터와 모든 카테고리/이름 정보가 함께 저장됩니다.</div>
+      <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 기간(연-월-일)의 거래 데이터와 모든 카테고리/이름 정보가 함께 ${isEmail ? '발송됩니다.' : '저장됩니다.'}</div>
       `}
 
-      <button class="btn-primary" id="bkGo">JSON 백업 파일 만들기</button>
+      <button class="btn-primary" id="bkGo">${isEmail ? '메일로 발송하기' : 'JSON 백업 파일 만들기'}</button>
     </div>
   `;
 
@@ -5964,29 +5984,28 @@ function renderBackupRangeSheet() {
 
   sheet.querySelector('#bkClose').addEventListener('click', closeAllSheets);
   sheet.querySelector('#bkGo').addEventListener('click', () => {
-    if (backupMode === 'all') {
-      exportData(null, null);
-      closeAllSheets();
-      return;
-    }
-    let sDate, eDate;
+    let sDate = null, eDate = null;
     if (backupMode === 'single') {
       const ym = sheet.querySelector('#bkSingle').value;
       sDate = `${ym}-01`;
       const [y, m] = ym.split('-').map(Number);
       eDate = `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2,'0')}`;
-    } else {
+    } else if (backupMode === 'range') {
       sDate = sheet.querySelector('#bkStart').value;
       eDate = sheet.querySelector('#bkEnd').value;
       if (!sDate || !eDate) { showToast('시작일과 종료일을 선택해주세요'); return; }
       if (sDate > eDate) { showToast('시작일이 종료일보다 늦어요'); return; }
     }
-    exportData(sDate, eDate);
+    if (backupAction === 'email') {
+      sendBackupByEmail(sDate, eDate);
+    } else {
+      exportData(sDate, eDate);
+    }
     closeAllSheets();
   });
 }
 
-async function sendBackupByEmail() {
+async function sendBackupByEmail(startDate = null, endDate = null) {
   const emailRec = await DB.get('settings', 'maturityEmail');
   if (!emailRec || !emailRec.email) {
     showToast('설정에서 이메일을 먼저 등록해주세요');
@@ -5996,21 +6015,35 @@ async function sendBackupByEmail() {
   const appName = State.appName || '교회 회계부';
   const today = todayStr();
 
+  const txs = (startDate && endDate)
+    ? State.transactions.filter(t => t.date >= startDate && t.date <= endDate)
+    : State.transactions;
+
+  let rangeLabel;
+  if (startDate && endDate) {
+    const fmt = (d) => { const [y, m, dd] = d.split('-'); return `${y}년${Number(m)}월${Number(dd)}일`; };
+    rangeLabel = (startDate === endDate) ? fmt(startDate) : `${fmt(startDate)}-${fmt(endDate)}`;
+  } else {
+    rangeLabel = `전체_${today}`;
+  }
+
   const allTemplates = await DB.getAll('templates');
   const data = {
     exportedAt: new Date().toISOString(),
+    rangeStart: startDate || null,
+    rangeEnd:   endDate   || null,
     categories: State.categories,
     persons: State.persons,
     subItems: State.subItems,
     subGroups: State.subGroups || [],
     linkedAccounts: State.linkedAccounts || [],
-    transactions: State.transactions,
+    transactions: txs,
     templates: allTemplates || [],
   };
   const jsonStr = JSON.stringify(data, null, 2);
-  const txCount = State.transactions.length;
-  const fileName = `backup-${today}.json`;
-  const subject = `[${appName}] 데이터 백업 ${today}`;
+  const txCount = txs.length;
+  const fileName = `backup-${rangeLabel}.json`;
+  const subject = `[${appName}] 데이터 백업 ${rangeLabel}`;
   const blob = new Blob([jsonStr], { type: 'application/json' });
 
   // iOS/Android: Web Share API로 파일 공유 (메일 앱에 첨부 가능)
@@ -6019,7 +6052,7 @@ async function sendBackupByEmail() {
     try {
       await navigator.share({
         title: subject,
-        text: `${appName} 전체 데이터 백업\n거래 ${txCount}건\n백업일시: ${new Date().toLocaleString('ko-KR')}`,
+        text: `${appName} 데이터 백업 (${rangeLabel})\n거래 ${txCount}건\n백업일시: ${new Date().toLocaleString('ko-KR')}`,
         files: [file],
       });
       showToast('📧 공유 완료');
@@ -6039,7 +6072,7 @@ async function sendBackupByEmail() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-  const bodyShort = `${appName} 백업\n\n백업일시: ${new Date().toLocaleString('ko-KR')}\n거래 건수: ${txCount}건\n\n다운로드된 JSON 파일을 첨부해 보내주세요.`;
+  const bodyShort = `${appName} 백업 (${rangeLabel})\n\n백업일시: ${new Date().toLocaleString('ko-KR')}\n거래 건수: ${txCount}건\n\n다운로드된 JSON 파일을 첨부해 보내주세요.`;
   window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyShort)}`;
   showToast('📥 JSON 다운로드 완료 — 메일에 첨부해 발송해주세요');
 }

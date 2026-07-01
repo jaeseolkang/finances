@@ -1,6 +1,6 @@
-// 2026-07-01 KST | CACHE_NAME v2004 (계정 탭 이름/만기일 정렬, 정기계정 헤더명 변경)
+// 2026-07-01 KST | CACHE_NAME v2005 (일반계정 정렬 재확인, 정기계정 명칭 전체 통일)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2004';
+const CACHE_NAME = 'gaegyebu-v2005';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

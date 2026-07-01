@@ -3900,7 +3900,7 @@ async function renderAccounts() {
   const grandNet     = mainNet     + normalNet      + depositNet;
   const grandNetColor = grandNet >= 0 ? 'var(--primary)' : 'var(--expense)';
 
-  // ── 현재 탭 계좌 목록 (정기예금 탭이면 정렬 적용) ──
+  // ── 현재 탭 계좌 목록 (정기계정 탭이면 정렬 적용) ──
   let accounts = nonDefaultAccts.filter(a => {
     if (sub === 'deposit') return a.accountKind === 'deposit';
     return !a.accountKind || a.accountKind === 'normal';
@@ -3935,7 +3935,7 @@ async function renderAccounts() {
   const shortName = name => name.replace(/계정$/, '');
 
   const emptyMsg = sub === 'deposit'
-    ? '등록된 정기예금 계좌가 없어요<br><span style="font-size:12px;">설정 → 연결계좌 관리에서 추가하세요</span>'
+    ? '등록된 정기계정 계좌가 없어요<br><span style="font-size:12px;">설정 → 연결계좌 관리에서 추가하세요</span>'
     : '등록된 계정이 없어요<br><span style="font-size:12px;">설정 → 연결계좌 관리에서 추가하세요</span>';
 
   const rowsHTML = accounts.length === 0
@@ -3945,7 +3945,7 @@ async function renderAccounts() {
         const carry = a.carryover || 0;
         const net   = carry + t.income - t.expense;
         const netColor = net >= 0 ? 'var(--primary)' : 'var(--expense)';
-        // 만기일 표시 (정기예금 탭)
+        // 만기일 표시 (정기계정 탭)
         let maturityTd = '';
         if (sub === 'deposit') {
           const md = a.maturityDate || '';
@@ -4427,7 +4427,7 @@ function renderSettings() {
     </div>` : ''}
 
     <div class="settings-group">
-      <div class="settings-group-title">정기예금 만기 알림</div>
+      <div class="settings-group-title">정기계정 만기 알림</div>
       <div class="settings-row" style="justify-content:space-between;align-items:center;" id="emailDisplayRow">
         <div>
           <div class="settings-label">알림 수신 이메일</div>
@@ -5068,7 +5068,7 @@ function isSunday() {
 }
 
 /* =========================================================
-   정기예금 만기 알림 — Gmail MCP via Anthropic API
+   정기계정 만기 알림 — Gmail MCP via Anthropic API
    ========================================================= */
 async function checkMaturityAndNotify(force = false) {
   const emailRec = await DB.get('settings', 'maturityEmail');
@@ -5087,7 +5087,7 @@ async function checkMaturityAndNotify(force = false) {
   const d30 = new Date(); d30.setDate(d30.getDate() + 30);
   const date30 = `${d30.getFullYear()}-${String(d30.getMonth()+1).padStart(2,'0')}-${String(d30.getDate()).padStart(2,'0')}`;
 
-  // 정기예금 계좌 중 만기일이 오늘 ~ 30일 이내인 것 찾기
+  // 정기계정 계좌 중 만기일이 오늘 ~ 30일 이내인 것 찾기
   const deposits = (State.linkedAccounts || []).filter(a => a.isDeposit && a.maturityDate);
   const targets = deposits.filter(a => a.maturityDate >= today && a.maturityDate <= date30);
 
@@ -5105,8 +5105,8 @@ async function checkMaturityAndNotify(force = false) {
     return `• ${tag} | ${a.name} | ${a.maturityDate} | ${amt}원`;
   }).join('\n');
 
-  const subject = `[${appName}] 정기예금 만기 알림 (${today})`;
-  const body = `안녕하세요.\n\n정기예금 만기 계좌를 알려드립니다.\n\n${rows}\n\n확인 후 적절한 조치를 취해주세요.\n\n— ${appName}`;
+  const subject = `[${appName}] 정기계정 만기 알림 (${today})`;
+  const body = `안녕하세요.\n\n정기계정 만기 계좌를 알려드립니다.\n\n${rows}\n\n확인 후 적절한 조치를 취해주세요.\n\n— ${appName}`;
 
   // mailto로 메일 앱 열기
   try {
@@ -7336,9 +7336,9 @@ function renderLinkedAccountsSheet() {
         </div>
         <div class="la-split-divider"></div>
         <div class="la-split-col">
-          <div class="la-split-header">정기예금</div>
+          <div class="la-split-header">정기계정</div>
           <div class="la-list" id="laDepositList">${depositListHTML}</div>
-          <button class="la-add-btn la-add-small" data-kind="deposit">${ICONS.plus} 정기예금 추가</button>
+          <button class="la-add-btn la-add-small" data-kind="deposit">${ICONS.plus} 정기계정 추가</button>
         </div>
       </div>
     </div>
@@ -7394,10 +7394,10 @@ function openLinkedAccountEditSheet(acct, kind) {
   const isDefault = isNew ? newIsDefault : !!acct.isDefault;
   const defaultName = isNew && accountKind === 'normal' && !existingDefault ? '대표계정' : '';
 
-  // 정기예금 프리셋 이름
+  // 정기계정 프리셋 이름
   const depositPresets = ['정기선교', '정기건축', '정기후대', '정기퇴직'];
 
-  const kindLabel = accountKind === 'deposit' ? '정기예금' : '일반계좌';
+  const kindLabel = accountKind === 'deposit' ? '정기계정' : '일반계좌';
 
   const presetsHTML = (isNew && accountKind === 'deposit') ? `
     <div class="form-field" style="margin-bottom:0;">
@@ -7432,7 +7432,7 @@ function openLinkedAccountEditSheet(acct, kind) {
         <label class="form-label">만기일</label>
         <input id="laeMaturityInput" class="form-input" type="date"
           value="${isNew ? '' : (acct.maturityDate||'')}">
-        <div style="font-size:12px;color:var(--text-3);margin-top:4px;">정기예금 만기일을 입력하세요 (선택)</div>
+        <div style="font-size:12px;color:var(--text-3);margin-top:4px;">정기계정 만기일을 입력하세요 (선택)</div>
       </div>` : ''}
       <div class="la-default-row">
         <label class="la-default-label" for="laeDefaultChk">대표계정으로 설정</label>

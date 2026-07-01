@@ -1888,6 +1888,96 @@ function txInPeriod(start, end) {
   return mainAcctTxs().filter(t => t.date >= start && t.date <= end);
 }
 
+// 통계 탭: 년월(또는 연도) 빠른 선택 팝업
+function openStatsPeriodPicker() {
+  const existing = document.getElementById('statsPeriodPickerPop');
+  if (existing) { existing.remove(); return; }
+
+  const isMonthMode = State.statsPeriod === 'month';
+  const today = new Date();
+  const curY = isMonthMode ? State.cursorDate.getFullYear() : (today.getFullYear() + State.statsYearOffset);
+  const curM = isMonthMode ? State.cursorDate.getMonth() + 1 : null;
+
+  // 현재 연도 기준 ±5년
+  const years = [];
+  for (let y = curY - 5; y <= curY + 1; y++) years.push(y);
+  const months = Array.from({length: 12}, (_, i) => i + 1);
+
+  const pop = document.createElement('div');
+  pop.id = 'statsPeriodPickerPop';
+  pop.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+  pop.innerHTML = `
+    <div style="background:var(--card);border-radius:20px;padding:20px;width:300px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+      <div style="font-size:15px;font-weight:700;color:var(--text-1);margin-bottom:14px;text-align:center;">${isMonthMode ? '날짜 이동' : '연도 이동'}</div>
+
+      <div style="${isMonthMode ? 'margin-bottom:12px;' : 'margin-bottom:16px;'}">
+        <div style="font-size:11px;color:var(--text-2);margin-bottom:6px;font-weight:600;">연도</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;">
+          ${years.map(y => `
+            <button data-year="${y}" style="padding:8px 4px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:${y===curY?'700':'400'};background:${y===curY?'var(--primary)':'var(--card)'};color:${y===curY?'#fff':'var(--text-1)'};cursor:pointer;">${y}</button>
+          `).join('')}
+        </div>
+      </div>
+
+      ${isMonthMode ? `
+      <div style="margin-bottom:16px;">
+        <div style="font-size:11px;color:var(--text-2);margin-bottom:6px;font-weight:600;">월</div>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:5px;">
+          ${months.map(m => `
+            <button data-month="${m}" style="padding:8px 4px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-weight:${m===curM?'700':'400'};background:${m===curM?'var(--primary)':'var(--card)'};color:${m===curM?'#fff':'var(--text-1)'};cursor:pointer;">${m}월</button>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      <div style="display:flex;gap:8px;">
+        <button id="statsPeriodPickerCancel" style="flex:1;padding:11px;border-radius:12px;background:var(--surface-2);border:none;font-size:14px;font-weight:600;color:var(--text-1);">취소</button>
+        <button id="statsPeriodPickerOk" style="flex:1;padding:11px;border-radius:12px;background:var(--primary);border:none;font-size:14px;font-weight:700;color:#fff;">이동</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(pop);
+
+  let selYear = curY, selMonth = curM;
+
+  // 연도 선택
+  pop.querySelectorAll('[data-year]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      selYear = Number(btn.dataset.year);
+      pop.querySelectorAll('[data-year]').forEach(b => {
+        b.style.background = b.dataset.year == selYear ? 'var(--primary)' : 'var(--card)';
+        b.style.color = b.dataset.year == selYear ? '#fff' : 'var(--text-1)';
+        b.style.fontWeight = b.dataset.year == selYear ? '700' : '400';
+      });
+    });
+  });
+
+  // 월 선택 (월 모드에서만)
+  if (isMonthMode) {
+    pop.querySelectorAll('[data-month]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selMonth = Number(btn.dataset.month);
+        pop.querySelectorAll('[data-month]').forEach(b => {
+          b.style.background = b.dataset.month == selMonth ? 'var(--primary)' : 'var(--card)';
+          b.style.color = b.dataset.month == selMonth ? '#fff' : 'var(--text-1)';
+          b.style.fontWeight = b.dataset.month == selMonth ? '700' : '400';
+        });
+      });
+    });
+  }
+
+  pop.querySelector('#statsPeriodPickerCancel').addEventListener('click', () => pop.remove());
+  pop.querySelector('#statsPeriodPickerOk').addEventListener('click', () => {
+    if (isMonthMode) {
+      State.cursorDate = new Date(selYear, selMonth - 1, 1);
+    } else {
+      State.statsYearOffset = selYear - today.getFullYear();
+    }
+    pop.remove();
+    renderStats();
+  });
+  pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+}
+
 /* =========================================================
    PRINT: 통계 인쇄 (A4)
    ========================================================= */
@@ -3026,7 +3116,9 @@ function renderStats() {
     <!-- 기간 네비게이터 -->
     <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:10px; box-shadow:var(--shadow); margin-bottom:14px;">
       ${canNav ? `<button id="statsPrev" style="color:var(--text-2);">${ICONS.chevLeft}</button>` : `<div style="width:28px;"></div>`}
-      <span style="font-weight:700; font-size:14px; flex:1; text-align:center;">${range.label}</span>
+      ${(State.statsPeriod === 'month' || State.statsPeriod === 'year')
+        ? `<button id="statsLabel" style="background:none;border:none;font-weight:700; font-size:14px; flex:1; text-align:center; color:var(--text-1); cursor:pointer; padding:4px 8px; border-radius:8px;">${range.label}</button>`
+        : `<span style="font-weight:700; font-size:14px; flex:1; text-align:center;">${range.label}</span>`}
       ${canNav ? `<button id="statsNext" style="color:var(--text-2);">${ICONS.chevRight}</button>` : `<div style="width:28px;"></div>`}
     </div>
 
@@ -3117,6 +3209,8 @@ function renderStats() {
       renderStats();
     });
   }
+
+  page.querySelector('#statsLabel')?.addEventListener('click', openStatsPeriodPicker);
 
   if (State.statsPeriod === 'custom') {
     page.querySelector('#customStart').addEventListener('change', e => {

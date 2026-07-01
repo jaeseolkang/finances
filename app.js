@@ -3090,6 +3090,12 @@ function renderStats() {
       .sort((a,b) => b.amt - a.amt);
   }
 
+  let interestPeriodTotal = 0, interestAllTimeTotal = 0;
+  if (isInterest) {
+    interestPeriodTotal  = Object.values(buildInterestAggMap(range)).reduce((s,r)=>s+r.amount, 0);
+    interestAllTimeTotal = Object.values(buildInterestAggMap({ start: '0000-01-01', end: '9999-12-31' })).reduce((s,r)=>s+r.amount, 0);
+  }
+
   page.innerHTML = `
     <div class="appbar" style="padding-left:0;padding-right:0;">
       <h1>통계</h1>
@@ -3143,6 +3149,18 @@ function renderStats() {
     </div>
 
     <!-- 요약 숫자 -->
+    ${isInterest ? `
+    <div class="cal-summary-row" style="margin-bottom:14px;">
+      <div class="cal-summary-col">
+        <div class="cal-summary-label">이자금액</div>
+        <div class="cal-summary-value income tabular">${fmtMoney(interestPeriodTotal)}</div>
+      </div>
+      <div class="cal-summary-col">
+        <div class="cal-summary-label">합계</div>
+        <div class="cal-summary-value income tabular">${fmtMoney(interestAllTimeTotal)}</div>
+      </div>
+    </div>
+    ` : `
     <div class="cal-summary-row" style="margin-bottom:14px;">
       <div class="cal-summary-col">
         <div class="cal-summary-label">수입</div>
@@ -3160,6 +3178,7 @@ function renderStats() {
         )}</div>
       </div>
     </div>
+    `}
 
     ${isList
       ? buildLedgerSectionsHTML(range)

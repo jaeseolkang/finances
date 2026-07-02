@@ -1,6 +1,6 @@
-// 2026-07-02 KST | CACHE_NAME v2025 (홈 오늘 버튼 추가, 예산/통계 연도 헤더 확대)
+// 2026-07-02 KST | CACHE_NAME v2029 (계정 탭 연도 필터 기본값을 당해연도로 변경)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2025';
+const CACHE_NAME = 'gaegyebu-v2029';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

@@ -647,10 +647,12 @@ input,textarea,select{font-family:inherit; color:inherit;}
 .cal-summary-value.expense{color:var(--expense);}
 
 .cal-month-nav{
-  display:flex; align-items:center; justify-content:center; gap:18px;
-  padding:6px 0 14px;
+  display:flex; align-items:center; justify-content:center; gap:10px;
+  padding:6px 14px 14px;
+  flex-wrap:wrap;
+  row-gap:6px;
 }
-.cal-month-nav button{color:var(--text-2); padding:6px;}
+.cal-month-nav .cal-nav-arrow{color:var(--text-2); width:44px; height:44px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
 .cal-month-nav .lbl{font-size:16px; font-weight:800; min-width:110px; text-align:center;}
 
 .cal-grid{

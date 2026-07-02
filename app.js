@@ -1,4 +1,4 @@
-// v3.13 | 2026-07-02 KST | 수정: 홈 달력에 "오늘" 이동 버튼 추가, 예산/통계(연간) 페이지의 연도 헤더 폰트 확대 | cache:v217
+// v3.17 | 2026-07-02 KST | 수정: 계정 탭 연도 필터 기본값을 "전체연도"에서 "당해연도"로 변경(선택 팝업은 기존대로 전체/개별연도 모두 표시) | cache:v221
 'use strict';
 
 // ============================================================
@@ -466,7 +466,7 @@ const State = {
   normalSortDir: 'asc',     // 'asc' | 'desc'
   depositSortKey: 'name',   // 'name' | 'maturity'
   depositSortDir: 'asc',    // 'asc' | 'desc'
-  accountsYear: 'all',      // 'all' | 숫자연도 — 일반계정/정기계정 탭 연도 필터
+  accountsYear: new Date().getFullYear(), // 'all' | 숫자연도 — 일반계정/정기계정 탭 연도 필터 (기본값: 당해연도)
 };
 
 function fmtMoney(n) {
@@ -1079,6 +1079,28 @@ function totalAssetsForYearSync(year) {
   return { totalIncome: income, totalExpense: expense, depositExp, netExpense, carryover, net, year };
 }
 
+// 임의의 날짜 기준 "이월잔액" 계산 (연간이 아닌 월간/기간설정 통계 요약카드에서 사용)
+// beforeDate(exclusive) 이전까지의 모든 거래를 반영한 누적 잔액 = 최초연도 전년이월 + 그 이전까지의 수입 - 지출
+function balanceAsOfDateSync(beforeDate) {
+  const carryoverCat = State.categories.find(c => c.name === '전년이월');
+  const allTxs = mainAcctTxs();
+  const yearsWithTx = Array.from(new Set(allTxs.map(t => Number(t.date.slice(0, 4))))).sort((a, b) => a - b);
+  if (!yearsWithTx.length) return 0;
+  const firstYear = yearsWithTx[0];
+
+  let base = 0, income = 0, expense = 0;
+  for (const t of allTxs) {
+    if (t.type === 'income' && carryoverCat && t.categoryId === carryoverCat.id && Number(t.date.slice(0, 4)) === firstYear) {
+      base += t.amount; // 최초 연도 전년이월 시작값
+      continue;
+    }
+    if (t.date >= beforeDate) continue; // 기준일 이후는 제외
+    if (t.type === 'income') income += t.amount;
+    else expense += t.amount;
+  }
+  return base + income - expense;
+}
+
 async function totalAssetsForYear(year) {
   return totalAssetsForYearSync(year);
 }
@@ -1484,9 +1506,9 @@ async function renderHome() {
 
     ${State.homeView !== 'monthly' ? `
     <div class="cal-month-nav">
-      <button id="prevMonth">${ICONS.chevLeft}</button>
+      <button id="prevMonth" class="cal-nav-arrow">${ICONS.chevLeft}</button>
       <button id="monthLabel" style="background:none;border:none;font-size:15px;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;">${monthLabel(State.cursorDate)}</button>
-      <button id="nextMonth">${ICONS.chevRight}</button>
+      <button id="nextMonth" class="cal-nav-arrow">${ICONS.chevRight}</button>
       <button id="goTodayBtn" style="font-size:12.5px;font-weight:700;color:var(--primary);background:var(--primary-light);padding:6px 12px;border-radius:20px;white-space:nowrap;">오늘</button>
     </div>` : ''}
 
@@ -2022,9 +2044,9 @@ function renderBudget() {
       <button class="icon-btn" id="manageCatsBtn" style="width:auto;padding:0 14px;font-size:13px;font-weight:700;color:var(--primary);">항목 관리</button>
     </div>
     <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:10px; box-shadow:var(--shadow); color:var(--text-1); margin-bottom:14px;">
-      <button id="prevYear" style="color:var(--text-2);">${ICONS.chevLeft}</button>
-      <button id="budgetYearLabel" style="background:none;border:none;font-weight:800;font-size:20px;color:var(--text-1);cursor:pointer;padding:6px 10px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">${year}년 연간 예산 <span style="font-size:14px;color:var(--text-3);">▾</span></button>
-      <button id="nextYear" style="color:var(--text-2);">${ICONS.chevRight}</button>
+      <button id="prevYear" style="flex-shrink:0;color:var(--text-2);">${ICONS.chevLeft}</button>
+      <button id="budgetYearLabel" style="flex:1;min-width:0;background:none;border:none;font-weight:800;font-size:19px;color:var(--text-1);cursor:pointer;padding:6px 4px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${year}년 예산 <span style="font-size:13px;color:var(--text-3);flex-shrink:0;">▾</span></button>
+      <button id="nextYear" style="flex-shrink:0;color:var(--text-2);">${ICONS.chevRight}</button>
     </div>
 
     <!-- 전체 요약 -->
@@ -3367,9 +3389,30 @@ function renderStats() {
   const isInterest = State.statsType === 'interest';
   const list   = (isList || isInterest) ? [] : allTx.filter(t => t.type === State.statsType);
 
-  // 연간 모드일 때: 전년이월/총수입/총지출/총예금/순지출/순수입계(=순자산) 계산 (홈과 동일 개념, 연도는 통계 탭에서 탐색 중인 연도 기준)
+  // 연간/월간/기간설정 모드일 때: 이월잔액/총수입/총지출/총예금/순지출/순수입계 계산 (주간만 단순 3항목 유지)
   const statsYear = new Date().getFullYear() + State.statsYearOffset;
-  const yearAssets = (State.statsPeriod === 'year' && !isInterest) ? totalAssetsForYearSync(statsYear) : null;
+  let periodAssets = null;
+  if (!isInterest && State.statsPeriod === 'year') {
+    periodAssets = totalAssetsForYearSync(statsYear);
+  } else if (!isInterest && (State.statsPeriod === 'month' || State.statsPeriod === 'custom')) {
+    const depositCat = State.categories.find(c => c.name === '예금');
+    const carryoverCat = State.categories.find(c => c.name === '전년이월');
+    let totalIncome = 0, totalExpense = 0, depositExp = 0;
+    for (const t of allTx) {
+      if (t.type === 'income') {
+        if (carryoverCat && t.categoryId === carryoverCat.id) continue;
+        totalIncome += t.amount;
+      } else {
+        if (depositCat && t.categoryId === depositCat.id) depositExp += t.amount;
+        totalExpense += t.amount;
+      }
+    }
+    const carryover = balanceAsOfDateSync(range.start);
+    const netExpense = totalExpense - depositExp;
+    const net = carryover + totalIncome - totalExpense;
+    periodAssets = { totalIncome, totalExpense, depositExp, netExpense, carryover, net };
+  }
+  const carryLabel = State.statsPeriod === 'year' ? '전년이월' : '이월잔액';
 
   // 기간별 내역 (날짜순)
   const detailTx = list.slice().sort((a,b) => a.date.localeCompare(b.date) || b.createdAt - a.createdAt);
@@ -3463,20 +3506,20 @@ function renderStats() {
         <div class="cal-summary-value income tabular">${fmtMoney(interestPeriodTotal)}</div>
       </div>
     </div>
-    ` : yearAssets ? `
+    ` : periodAssets ? `
     <div class="cal-summary-row" style="flex-direction:column;margin-bottom:14px;">
       <div style="display:flex;width:100%;">
         <div class="cal-summary-col">
-          <div class="cal-summary-label">전년이월</div>
-          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.carryover)}</div>
+          <div class="cal-summary-label">${carryLabel}</div>
+          <div class="cal-summary-value tabular">${fmtMoney(periodAssets.carryover)}</div>
         </div>
         <div class="cal-summary-col">
           <div class="cal-summary-label">수입</div>
-          <div class="cal-summary-value income tabular">${fmtMoney(yearAssets.totalIncome)}</div>
+          <div class="cal-summary-value income tabular">${fmtMoney(periodAssets.totalIncome)}</div>
         </div>
         <div class="cal-summary-col">
           <div class="cal-summary-label">지출</div>
-          <div class="cal-summary-value expense tabular">${fmtMoney(yearAssets.totalExpense)}</div>
+          <div class="cal-summary-value expense tabular">${fmtMoney(periodAssets.totalExpense)}</div>
         </div>
       </div>
 
@@ -3485,15 +3528,15 @@ function renderStats() {
       <div style="display:flex;width:100%;">
         <div class="cal-summary-col">
           <div class="cal-summary-label">예금</div>
-          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.depositExp)}</div>
+          <div class="cal-summary-value tabular">${fmtMoney(periodAssets.depositExp)}</div>
         </div>
         <div class="cal-summary-col">
           <div class="cal-summary-label">순지출</div>
-          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.netExpense)}</div>
+          <div class="cal-summary-value tabular">${fmtMoney(periodAssets.netExpense)}</div>
         </div>
         <div class="cal-summary-col">
           <div class="cal-summary-label">순수입계</div>
-          <div class="cal-summary-value tabular" style="color:${yearAssets.net>=0?'#2563eb':'#dc2626'};">${yearAssets.net>=0?'':'-'}${fmtMoney(Math.abs(yearAssets.net))}</div>
+          <div class="cal-summary-value tabular" style="color:${periodAssets.net>=0?'#2563eb':'#dc2626'};">${periodAssets.net>=0?'':'-'}${fmtMoney(Math.abs(periodAssets.net))}</div>
         </div>
       </div>
     </div>

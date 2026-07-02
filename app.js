@@ -1,6 +1,6 @@
-// v3.24 | 2026-07-02 KST | 수정: 설정 > 정보 > 버전에 하드코딩되어 있던 "v2.94"를 실제 배포 버전과 자동으로 맞춰지도록 수정(APP_VERSION 상수 사용) — 이제 이 화면으로 배포 여부 확인 가능 | cache:v228
+// v3.26 | 2026-07-02 KST | 수정: 명부 탭에 "기부금" 화면 추가(가족/이름순 앞) — 주 신청인+합산 최대5명 선택 후 발행, 일련번호 자동채번(귀속연도+3자리), 직인 자동 합성, 발행내역/재인쇄 지원 | cache:v230
 'use strict';
-const APP_VERSION = 'v3.24 (cache v228)';
+const APP_VERSION = 'v3.26 (cache v230)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -447,7 +447,7 @@ const State = {
   // 거래 입력 폼 진행 상태
   formType: 'expense',
   formStep: 'pick', // 'pick'(중분류 선택) -> 'items'
-  memberView: 'family', // 'family' | 'name'
+  memberView: 'family', // 'donation' | 'family' | 'name'
   formCategoryId: null,
   formPersonId: null,
   formSubGroupId: null,
@@ -468,6 +468,10 @@ const State = {
   depositSortKey: 'name',   // 'name' | 'maturity'
   depositSortDir: 'asc',    // 'asc' | 'desc'
   accountsYear: new Date().getFullYear(), // 'all' | 숫자연도 — 일반계정/정기계정 탭 연도 필터 (기본값: 당해연도)
+  donationPrimaryKey: null, // 기부금영수증 발행: 주 신청인 key
+  donationAddKeys: [],      // 기부금영수증 발행: 합산 대상 key 배열 (최대 5)
+  donationYear: null,       // 기부금영수증 발행: 귀속연도 (null이면 당해연도-1로 기본 설정)
+  donationIssueDate: null,  // 기부금영수증 발행: 발급일자 (null이면 오늘)
 };
 
 function fmtMoney(n) {
@@ -5372,6 +5376,27 @@ function renderSettings() {
 
 
     <div class="settings-group">
+      <div class="settings-group-title">교회 직인</div>
+      <div class="settings-row" style="align-items:center;">
+        <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+          <div id="sealPreviewWrap" style="width:52px;height:52px;border-radius:12px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;border:1px solid var(--border);">
+            <span style="font-size:20px;opacity:0.35;">🔖</span>
+          </div>
+          <div style="min-width:0;">
+            <div class="settings-label">직인(도장) 이미지</div>
+            <div class="settings-sub" id="sealStatusSub">불러오는 중...</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button id="btnSealRemove" style="display:none;padding:6px 12px;border-radius:20px;background:var(--surface-2);font-size:12px;font-weight:700;border:1px solid var(--border);color:var(--expense);white-space:nowrap;">삭제</button>
+          <button id="btnSealUpload" style="padding:6px 14px;border-radius:20px;background:var(--surface-2);font-size:12px;font-weight:700;border:1px solid var(--border);white-space:nowrap;">등록</button>
+        </div>
+      </div>
+      <div class="settings-sub" style="padding:0 16px 12px;">기부금 영수증 등 문서 출력 시 사용할 직인 이미지예요. 배경이 투명한 PNG를 권장해요.</div>
+      <input type="file" id="sealFileInput" accept="image/png,image/jpeg" style="display:none;">
+    </div>
+
+    <div class="settings-group">
       <div class="settings-group-title">데이터</div>
       <div class="settings-row" id="rowExportExcel">
         <div>
@@ -5656,6 +5681,49 @@ function renderSettings() {
     }
   })();
 
+  // 교회 직인(도장) 이미지
+  async function refreshSealUI() {
+    const rec = await DB.get('settings', 'churchSeal');
+    const wrap = page.querySelector('#sealPreviewWrap');
+    const sub = page.querySelector('#sealStatusSub');
+    const uploadBtn = page.querySelector('#btnSealUpload');
+    const removeBtn = page.querySelector('#btnSealRemove');
+    if (rec && rec.dataUrl) {
+      if (wrap) wrap.innerHTML = `<img src="${rec.dataUrl}" style="width:100%;height:100%;object-fit:contain;">`;
+      if (sub) sub.textContent = '등록됨 · 문서 출력에 사용돼요';
+      if (uploadBtn) uploadBtn.textContent = '변경';
+      if (removeBtn) removeBtn.style.display = '';
+    } else {
+      if (wrap) wrap.innerHTML = `<span style="font-size:20px;opacity:0.35;">🔖</span>`;
+      if (sub) sub.textContent = '등록된 직인이 없어요';
+      if (uploadBtn) uploadBtn.textContent = '등록';
+      if (removeBtn) removeBtn.style.display = 'none';
+    }
+  }
+  refreshSealUI();
+
+  page.querySelector('#btnSealUpload')?.addEventListener('click', () => {
+    page.querySelector('#sealFileInput').click();
+  });
+  page.querySelector('#sealFileInput')?.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { showToast('이미지 용량은 2MB 이하로 올려주세요'); e.target.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      await DB.put('settings', { key: 'churchSeal', dataUrl: reader.result });
+      await refreshSealUI();
+      showToast('✅ 직인이 등록됐어요');
+      e.target.value = '';
+    };
+    reader.readAsDataURL(file);
+  });
+  page.querySelector('#btnSealRemove')?.addEventListener('click', async () => {
+    await DB.del('settings', 'churchSeal');
+    await refreshSealUI();
+    showToast('직인을 삭제했어요');
+  });
+
   // 이메일 설정/변경 버튼 토글
   const btnEmailChange = page.querySelector('#btnEmailChange');
   if (btnEmailChange) {
@@ -5702,6 +5770,334 @@ function renderSettings() {
 /* =========================================================
    명부 페이지
    ========================================================= */
+/* =========================================================
+   기부금영수증 발행 (명부 탭 내 서브 화면)
+   ========================================================= */
+
+// 특정 연도의 사람별 헌금 합계 (실제 교인만, 무명/구역 등 가짜 항목 제외)
+function donationTotalsForYear(year) {
+  const giveCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
+  if (!giveCat) return [];
+  const realPersons = {};
+  for (const p of State.persons) {
+    if (p.position) realPersons[p.id] = p; // position 없는 항목(무명/구역 등)은 제외
+  }
+  const totals = {};
+  for (const t of State.transactions) {
+    if (t.type !== 'income' || t.categoryId !== giveCat.id) continue;
+    if ((t.date || '').slice(0, 4) !== String(year)) continue;
+    const pid = t.subGroupId || t.personId;
+    if (!pid || !realPersons[pid]) continue;
+    totals[pid] = (totals[pid] || 0) + t.amount;
+  }
+  return Object.entries(totals)
+    .filter(([, amt]) => amt > 0)
+    .map(([pid, amt]) => {
+      const p = realPersons[pid];
+      return { key: pid, name: p.name, amount: amt, residentId: p.residentId || '', address: p.address || '' };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+}
+
+function renderDonationReceiptHTML() {
+  return `
+    <div style="padding:4px 2px 16px;">
+      <p style="font-size:12.5px;color:var(--text-3);margin:0 0 14px;">명부와 헌금 내역으로 기부금영수증을 발행해요. 주 신청인 1명은 필수이고, 합산할 인원을 최대 5명까지 추가할 수 있어요.</p>
+
+      <div class="card" style="padding:14px 16px;margin-bottom:14px;">
+        <div style="font-weight:800;font-size:13.5px;margin-bottom:10px;">주 신청인 <span style="color:var(--expense);font-weight:600;font-size:11.5px;">(필수, 1명)</span></div>
+        <input type="text" id="donPrimarySearch" class="dateinput" placeholder="이름 검색..." style="margin-bottom:8px;">
+        <div id="donPrimaryList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;"></div>
+      </div>
+
+      <div class="card" style="padding:14px 16px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-weight:800;font-size:13.5px;">합산 대상 추가</span>
+          <span id="donAddCount" style="font-size:11.5px;color:var(--text-3);font-weight:700;">(0/5)</span>
+        </div>
+        <input type="text" id="donAddSearch" class="dateinput" placeholder="이름 검색..." style="margin-bottom:8px;">
+        <div id="donAddList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;"></div>
+        <div id="donAddChips" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="card" style="padding:14px 16px;margin-bottom:14px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+          <div>
+            <label style="display:block;font-size:11.5px;font-weight:700;color:var(--text-2);margin-bottom:6px;">귀속 연도</label>
+            <input type="number" id="donYear" class="dateinput">
+          </div>
+          <div>
+            <label style="display:block;font-size:11.5px;font-weight:700;color:var(--text-2);margin-bottom:6px;">발급일자</label>
+            <input type="date" id="donIssueDate" class="dateinput">
+          </div>
+        </div>
+        <div style="background:var(--primary);color:#fff;border-radius:12px;padding:14px 16px;">
+          <div style="font-size:11.5px;font-weight:700;opacity:0.85;">합산 금액</div>
+          <div id="donTotalAmt" style="font-size:24px;font-weight:800;margin-top:2px;">0원</div>
+        </div>
+        <div id="donSealWarn" style="display:none;font-size:12px;color:var(--expense);margin-top:10px;">🔖 등록된 직인이 없어요. <a href="#" id="donGoSeal" style="color:var(--primary);font-weight:700;">설정에서 등록하기</a></div>
+        <button id="donIssueBtn" class="btn-primary" disabled style="margin-top:14px;">발행</button>
+      </div>
+
+      <div id="donReceiptCard" class="card" style="display:none;padding:14px 16px;margin-bottom:14px;">
+        <div style="font-weight:800;font-size:13.5px;margin-bottom:10px;">미리보기</div>
+        <div id="donReceiptPreview" style="border:1px solid var(--border);border-radius:10px;padding:14px;background:#fff;font-size:11px;color:#111;overflow-x:auto;"></div>
+        <button id="donPrintBtn" style="margin-top:12px;width:100%;padding:12px;border-radius:10px;background:var(--primary-light);color:var(--primary);font-weight:800;font-size:14px;border:none;">🖨️ 인쇄 / PDF로 저장</button>
+      </div>
+
+      <div class="card" style="padding:14px 16px;">
+        <div style="display:flex;align-items:center;gap:8px;font-weight:800;font-size:13.5px;margin-bottom:10px;">
+          발행 내역 <span style="background:var(--primary);color:#fff;font-size:11px;font-weight:800;border-radius:20px;padding:1px 8px;" id="donLogCount">0</span>
+        </div>
+        <div id="donLogWrap"></div>
+      </div>
+    </div>
+  `;
+}
+
+function donationReceiptHTMLBody(rec) {
+  const seal = rec.sealDataUrl;
+  const periodStr = `${rec.donationYear}.1.1 ~ ${rec.donationYear}.12.31`;
+  const [iy, im, id] = rec.issueDate.split('-');
+  const combinedNote = rec.addNames && rec.addNames.length ? `<div style="font-size:10px;color:#666;margin-top:3px;">(합산: ${escapeHTML(rec.primary.name)} 외 ${rec.addNames.map(escapeHTML).join(', ')})</div>` : '';
+  return `
+    <div style="font-size:10.5px;">■ 소득세법 시행규칙 [별지 제45호의2서식]</div>
+    <div style="margin-top:6px;"><span style="border:1px solid #333;display:inline-block;padding:4px 10px;font-weight:700;font-size:11px;">일련번호&nbsp;&nbsp;${rec.serial}</span></div>
+    <div style="text-align:center;font-size:19px;font-weight:800;letter-spacing:4px;margin:6px 0 14px;">기 부 금 영 수 증</div>
+
+    <div style="font-weight:800;font-size:12px;margin:14px 0 4px;">1. 기부자</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">성&nbsp;&nbsp;&nbsp;&nbsp;명</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;">${escapeHTML(rec.primary.name)}${combinedNote}</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">주민등록번호<br><span style="font-weight:400;font-size:9.5px;">(사업자등록번호)</span></td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;">${escapeHTML(rec.primary.residentId||'')}</td></tr>
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">주&nbsp;&nbsp;&nbsp;&nbsp;소</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;" colspan="3">${escapeHTML(rec.primary.address||'')}</td></tr>
+    </table>
+
+    <div style="font-weight:800;font-size:12px;margin:14px 0 4px;">2. 기부금 단체</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">단 체 명</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;">${escapeHTML(rec.church.name)}</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">주민등록번호<br><span style="font-weight:400;font-size:9.5px;">(사업자등록번호)</span></td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;">${escapeHTML(rec.church.bizNo)}</td></tr>
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">소 재 지</td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;" colspan="3">${escapeHTML(rec.church.addr)}</td></tr>
+    </table>
+
+    <div style="font-weight:800;font-size:12px;margin:14px 0 4px;">3. 기부금 모집처(언론기관 등)</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">단 체 명</td><td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;"></td>
+          <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;width:15%;">사업자등록번호</td><td style="border:1px solid #333;padding:6px 8px;font-size:11px;width:35%;"></td></tr>
+      <tr><td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">소 재 지</td><td style="border:1px solid #333;padding:6px 8px;font-size:11px;" colspan="3"></td></tr>
+    </table>
+
+    <div style="font-weight:800;font-size:12px;margin:14px 0 4px;">4. 기부내용</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">유&nbsp;&nbsp;형</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">코&nbsp;&nbsp;드</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">구&nbsp;&nbsp;분</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">년&nbsp;&nbsp;월</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">내&nbsp;&nbsp;용</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;background:#F2F4F8;font-weight:700;text-align:center;">금&nbsp;&nbsp;액</td>
+      </tr>
+      <tr>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:center;">기부금</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:center;">41</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:center;">금전</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:center;">${periodStr}</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:center;">헌금</td>
+        <td style="border:1px solid #333;padding:6px 8px;font-size:11px;text-align:right;font-weight:800;">${fmtMoney(rec.total)}</td>
+      </tr>
+    </table>
+
+    <div style="font-size:10.5px;line-height:1.6;margin-top:14px;">「소득세법」 제34조, 「조세특례제한법」 제73조, 제76조 및 제88조의4에 따른 기부금을 위와 같이 기부하였음을 증명하여 주시기 바랍니다.</div>
+    <div style="text-align:center;margin-top:10px;font-size:11.5px;">${iy}년 &nbsp;${parseInt(im)}월 &nbsp;${parseInt(id)}일</div>
+
+    <div style="margin-top:18px;font-size:11.5px;">
+      <div style="display:flex;justify-content:flex-end;">신청인&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(서명 또는 인)</div>
+      <div style="margin-top:6px;">위와 같이 기부금을 기부받았음을 증명합니다.</div>
+      <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px;position:relative;">
+        <span>기부금 수령인&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${escapeHTML(rec.church.receiverLine)} (서명 또는 인)</span>
+        ${seal ? `<img src="${seal}" style="width:60px;height:60px;object-fit:contain;position:absolute;right:56px;top:-12px;opacity:0.92;">` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function initDonationReceiptView(page) {
+  let donors = donationTotalsForYear(State.donationYear || (new Date().getFullYear() - 1));
+  const sealRec = await DB.get('settings', 'churchSeal');
+  const sealDataUrl = sealRec && sealRec.dataUrl ? sealRec.dataUrl : null;
+  const CHURCH = { name: '주원교회(이현재)', bizNo: '144-89-00213', addr: '경기도 성남시 분당구 운중동 959 판오션타워 702호', receiverLine: '대한예수교장로회    주원교회' };
+
+  const yearInput = page.querySelector('#donYear');
+  const dateInput = page.querySelector('#donIssueDate');
+  yearInput.value = State.donationYear || (new Date().getFullYear() - 1);
+  dateInput.value = State.donationIssueDate || todayStr();
+
+  if (!sealDataUrl) page.querySelector('#donSealWarn').style.display = 'block';
+  page.querySelector('#donGoSeal')?.addEventListener('click', (e) => { e.preventDefault(); switchTab('settings'); });
+
+  const fmt = (n) => fmtMoney(n);
+  const byKey = (k) => donors.find(d => d.key === k);
+
+  function renderPrimaryList(filter) {
+    const el = page.querySelector('#donPrimaryList');
+    const f = (filter || '').trim();
+    if (donors.length === 0) { el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12.5px;">${State.donationYear || (new Date().getFullYear()-1)}년 헌금 기록이 없어요</div>`; return; }
+    el.innerHTML = donors.filter(d => !f || d.name.includes(f)).map(d => {
+      const disabled = State.donationAddKeys.includes(d.key);
+      return `<div class="don-prow" data-k="${d.key}" data-role="primary" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px;${disabled?'opacity:0.35;':'cursor:pointer;'}">
+        <input type="radio" name="donPrimaryRadio" ${State.donationPrimaryKey===d.key?'checked':''} ${disabled?'disabled':''} style="accent-color:var(--primary);">
+        <span style="flex:1;font-weight:600;">${escapeHTML(d.name)}</span><span style="color:var(--text-3);font-size:12.5px;">${fmt(d.amount)}원</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderAddList(filter) {
+    const el = page.querySelector('#donAddList');
+    const f = (filter || '').trim();
+    if (donors.length === 0) { el.innerHTML = ''; return; }
+    el.innerHTML = donors.filter(d => !f || d.name.includes(f)).map(d => {
+      const disabled = (d.key === State.donationPrimaryKey) || (!State.donationAddKeys.includes(d.key) && State.donationAddKeys.length >= 5);
+      return `<div class="don-prow" data-k="${d.key}" data-role="add" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px;${disabled?'opacity:0.35;':'cursor:pointer;'}">
+        <input type="checkbox" ${State.donationAddKeys.includes(d.key)?'checked':''} ${disabled?'disabled':''} style="accent-color:var(--primary);">
+        <span style="flex:1;font-weight:600;">${escapeHTML(d.name)}</span><span style="color:var(--text-3);font-size:12.5px;">${fmt(d.amount)}원</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderChips() {
+    const el = page.querySelector('#donAddChips');
+    el.innerHTML = State.donationAddKeys.map(k => {
+      const d = byKey(k);
+      if (!d) return '';
+      return `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--primary-light);color:var(--primary);font-size:12px;font-weight:700;padding:5px 10px;border-radius:20px;margin:3px 4px 0 0;">${escapeHTML(d.name)} <button data-remove="${k}" style="border:none;background:none;color:var(--primary);font-weight:800;cursor:pointer;font-size:13px;padding:0;">×</button></span>`;
+    }).join('');
+    page.querySelector('#donAddCount').textContent = `(${State.donationAddKeys.length}/5)`;
+  }
+
+  function currentTotal() {
+    let sum = 0;
+    if (State.donationPrimaryKey) { const d = byKey(State.donationPrimaryKey); if (d) sum += d.amount; }
+    State.donationAddKeys.forEach(k => { const d = byKey(k); if (d) sum += d.amount; });
+    return sum;
+  }
+
+  function refresh(pf, af) {
+    renderPrimaryList(pf);
+    renderAddList(af);
+    renderChips();
+    page.querySelector('#donTotalAmt').textContent = fmt(currentTotal()) + '원';
+    page.querySelector('#donIssueBtn').disabled = !State.donationPrimaryKey;
+  }
+
+  page.querySelector('#donPrimaryList').addEventListener('click', (e) => {
+    const row = e.target.closest('.don-prow');
+    if (!row || row.style.opacity === '0.35') return;
+    State.donationPrimaryKey = row.dataset.k;
+    refresh(page.querySelector('#donPrimarySearch').value, page.querySelector('#donAddSearch').value);
+  });
+  page.querySelector('#donAddList').addEventListener('click', (e) => {
+    const row = e.target.closest('.don-prow');
+    if (!row || row.style.opacity === '0.35') return;
+    const k = row.dataset.k;
+    const idx = State.donationAddKeys.indexOf(k);
+    if (idx >= 0) State.donationAddKeys.splice(idx, 1);
+    else if (State.donationAddKeys.length < 5) State.donationAddKeys.push(k);
+    refresh(page.querySelector('#donPrimarySearch').value, page.querySelector('#donAddSearch').value);
+  });
+  page.querySelector('#donAddChips').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove]');
+    if (!btn) return;
+    State.donationAddKeys = State.donationAddKeys.filter(k => k !== btn.dataset.remove);
+    refresh(page.querySelector('#donPrimarySearch').value, page.querySelector('#donAddSearch').value);
+  });
+  page.querySelector('#donPrimarySearch').addEventListener('input', (e) => renderPrimaryList(e.target.value));
+  page.querySelector('#donAddSearch').addEventListener('input', (e) => renderAddList(e.target.value));
+
+  yearInput.addEventListener('change', () => {
+    State.donationYear = parseInt(yearInput.value, 10) || (new Date().getFullYear() - 1);
+    State.donationPrimaryKey = null;
+    State.donationAddKeys = [];
+    donors = donationTotalsForYear(State.donationYear);
+    refresh('', '');
+  });
+  dateInput.addEventListener('change', () => { State.donationIssueDate = dateInput.value; });
+
+  async function renderLog() {
+    const rec = await DB.get('settings', 'donationReceiptLog');
+    const log = (rec && rec.list) || [];
+    page.querySelector('#donLogCount').textContent = log.length;
+    const wrap = page.querySelector('#donLogWrap');
+    if (!log.length) { wrap.innerHTML = `<div style="text-align:center;color:var(--text-3);font-size:12.5px;padding:20px 0;">아직 발행한 영수증이 없어요</div>`; return; }
+    wrap.innerHTML = log.slice().reverse().map((r, i) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;${i < log.length-1 ? 'border-bottom:1px solid var(--border);' : ''}">
+        <div style="min-width:0;">
+          <div style="font-weight:700;font-size:13px;">${escapeHTML(r.primary.name)}${r.addNames && r.addNames.length ? ` 외 ${r.addNames.length}명` : ''}</div>
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:2px;">${r.serial} · ${r.issueDate}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <span style="font-weight:700;font-size:13px;">${fmt(r.total)}원</span>
+          <button data-reprint="${log.length - 1 - i}" style="background:var(--primary-light);color:var(--primary);border:none;border-radius:8px;padding:5px 10px;font-size:11.5px;font-weight:700;cursor:pointer;">인쇄</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function showPreview(rec) {
+    page.querySelector('#donReceiptCard').style.display = 'block';
+    page.querySelector('#donReceiptPreview').innerHTML = donationReceiptHTMLBody(rec);
+    page.querySelector('#donReceiptCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    page.querySelector('#donPrintBtn').onclick = () => {
+      doPrint(`<div class="print-page"><div class="page-inner">${donationReceiptHTMLBody(rec)}</div></div>`);
+    };
+  }
+
+  page.querySelector('#donLogWrap').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-reprint]');
+    if (!btn) return;
+    const dbRec = await DB.get('settings', 'donationReceiptLog');
+    const log = (dbRec && dbRec.list) || [];
+    const r = log[parseInt(btn.dataset.reprint, 10)];
+    if (r) showPreview(r);
+  });
+
+  page.querySelector('#donIssueBtn').addEventListener('click', async () => {
+    if (!State.donationPrimaryKey) return;
+    const primary = byKey(State.donationPrimaryKey);
+    const donationYear = parseInt(yearInput.value, 10);
+    const issueDate = dateInput.value;
+    if (!donationYear || !issueDate) { showToast('귀속 연도와 발급일자를 확인해주세요'); return; }
+
+    const seqRec = await DB.get('settings', 'donationReceiptSeq');
+    const seqMap = (seqRec && seqRec.map) || {};
+    const seq = (seqMap[donationYear] || 0) + 1;
+    seqMap[donationYear] = seq;
+    await DB.put('settings', { key: 'donationReceiptSeq', map: seqMap });
+
+    const serial = `${donationYear}${String(seq).padStart(3, '0')}`;
+    const addNames = State.donationAddKeys.map(k => byKey(k)?.name).filter(Boolean);
+    const total = currentTotal();
+
+    const rec = { serial, primary, addNames, total, donationYear, issueDate, church: CHURCH, sealDataUrl };
+
+    const logRec = await DB.get('settings', 'donationReceiptLog');
+    const log = (logRec && logRec.list) || [];
+    log.push(rec);
+    await DB.put('settings', { key: 'donationReceiptLog', list: log });
+
+    showPreview(rec);
+    await renderLog();
+    showToast(`✅ ${serial} 발행 완료`);
+  });
+
+  refresh('', '');
+  renderLog();
+}
+
 function renderMembers() {
   const page = document.getElementById('page-members');
   // usePersonLevel 폐기 후에도 교인명부는 persons 스토어 사용
@@ -5790,13 +6186,15 @@ function renderMembers() {
       <h1>교인 명부</h1>
       <div style="display:flex;gap:8px;align-items:center;">
         <div style="display:flex;background:var(--border);border-radius:8px;padding:2px;gap:2px;">
+          <button id="viewDonation" style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;${viewMode==='donation'?'background:#fff;color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,0.1);':'color:var(--text-3);'}">기부금</button>
           <button id="viewFamily" style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;${viewMode==='family'?'background:#fff;color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,0.1);':'color:var(--text-3);'}">가족</button>
           <button id="viewName" style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;${viewMode==='name'?'background:#fff;color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,0.1);':'color:var(--text-3);'}">이름순</button>
         </div>
-        <button id="memberAdd" style="color:var(--primary);font-weight:800;font-size:14px;">+ 추가</button>
+        <button id="memberAdd" style="color:var(--primary);font-weight:800;font-size:14px;${viewMode==='donation'?'display:none;':''}">+ 추가</button>
       </div>
     </div>
     <div style="padding:0 0 120px;">
+      ${viewMode === 'donation' ? renderDonationReceiptHTML() : `
       <table style="width:100%; border-collapse:collapse; font-size:13px; font-family:var(--font-sans, -apple-system, sans-serif);">
         <thead>
           <tr style="background:var(--primary); color:#fff; text-align:left;">
@@ -5809,9 +6207,19 @@ function renderMembers() {
         </thead>
         <tbody>${bodyRows}</tbody>
       </table>
+      `}
     </div>
   `;
 
+  if (viewMode === 'donation') {
+    initDonationReceiptView(page);
+    page.querySelector('#viewDonation').addEventListener('click', () => { State.memberView = 'donation'; renderMembers(); });
+    page.querySelector('#viewFamily').addEventListener('click', () => { State.memberView = 'family'; renderMembers(); });
+    page.querySelector('#viewName').addEventListener('click', () => { State.memberView = 'name'; renderMembers(); });
+    return;
+  }
+
+  page.querySelector('#viewDonation').addEventListener('click', () => { State.memberView = 'donation'; renderMembers(); });
   page.querySelector('#viewFamily').addEventListener('click', () => { State.memberView = 'family'; renderMembers(); });
   page.querySelector('#viewName').addEventListener('click', () => { State.memberView = 'name'; renderMembers(); });
   page.querySelector('#memberAdd').addEventListener('click', () => openMemberEditSheet(null, heongCat));

@@ -1,6 +1,6 @@
-// 2026-07-02 KST | CACHE_NAME v2036 (설정 화면 버전 표시를 실제 버전과 동기화)
+// 2026-07-02 KST | CACHE_NAME v2038 (명부 탭에 기부금영수증 발행 화면 추가)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2036';
+const CACHE_NAME = 'gaegyebu-v2038';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

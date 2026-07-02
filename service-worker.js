@@ -1,6 +1,6 @@
-// 2026-07-02 KST | CACHE_NAME v2019 (홈 헤더 당해년도 기준을 캘린더 탐색 연도가 아닌 실제 현재 연도로 수정)
+// 2026-07-02 KST | CACHE_NAME v2021 (통계 탭 연간 모드에 전년이월 포함 2단 요약 카드 추가)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2019';
+const CACHE_NAME = 'gaegyebu-v2021';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

@@ -1,4 +1,4 @@
-// v3.07 | 2026-07-02 KST | 수정: 홈 헤더 총수입/총예금/순지출/전년이월 집계 기준을 캘린더 탐색 연도(cursorDate)가 아닌 실제 현재 연도(new Date())로 고정 | cache:v211
+// v3.09 | 2026-07-02 KST | 수정: 통계 탭 연간(年) 모드에 홈과 동일한 전년이월/수입/지출/예금/순지출/순수입계 2단 요약 카드 추가(주간/월간/기간설정은 기존 유지) | cache:v213
 'use strict';
 
 // ============================================================
@@ -1031,7 +1031,7 @@ async function totalAssets() {
      자동으로 그 해의 전년이월로 이월 처리 (연속기재)
    - 총수입/총예금/순지출은 해당 연도 거래만 집계
    --------------------------------------------------------- */
-async function totalAssetsForYear(year) {
+function totalAssetsForYearSync(year) {
   const carryoverCat = State.categories.find(c => c.name === '전년이월');
   const depositCat   = State.categories.find(c => c.name === '예금');
   const allTxs = mainAcctTxs();
@@ -1044,8 +1044,11 @@ async function totalAssetsForYear(year) {
     for (const t of allTxs) {
       if (Number(t.date.slice(0, 4)) !== yr) continue;
       if (t.type === 'income') {
-        if (carryoverCat && t.categoryId === carryoverCat.id) carryoverTx += t.amount;
-        else income += t.amount;
+        if (carryoverCat && t.categoryId === carryoverCat.id && yr === firstYear) {
+          carryoverTx += t.amount; // "전년이월" 명시는 최초 연도에서만 별도 집계(그 해의 시작 잔액)
+        } else {
+          income += t.amount;
+        }
       } else {
         if (depositCat && t.categoryId === depositCat.id) depositExp += t.amount;
         expense += t.amount;
@@ -1063,7 +1066,7 @@ async function totalAssetsForYear(year) {
       result = summarizeYear(yr).carryoverTx; // 최초 연도: 명시된 전년이월 그대로 사용
     } else {
       const prev = summarizeYear(yr - 1);
-      result = carryoverFor(yr - 1) + prev.income - prev.expense + prev.carryoverTx;
+      result = carryoverFor(yr - 1) + prev.income - prev.expense; // 전년도 년말 순자산을 그대로 이월
     }
     cache[yr] = result;
     return result;
@@ -1074,6 +1077,10 @@ async function totalAssetsForYear(year) {
   const netExpense = expense - depositExp;
   const net = carryover + income - expense;
   return { totalIncome: income, totalExpense: expense, depositExp, netExpense, carryover, net, year };
+}
+
+async function totalAssetsForYear(year) {
+  return totalAssetsForYearSync(year);
 }
 
 /* =========================================================
@@ -3355,6 +3362,10 @@ function renderStats() {
   const isInterest = State.statsType === 'interest';
   const list   = (isList || isInterest) ? [] : allTx.filter(t => t.type === State.statsType);
 
+  // 연간 모드일 때: 전년이월/총수입/총지출/총예금/순지출/순수입계(=순자산) 계산 (홈과 동일 개념, 연도는 통계 탭에서 탐색 중인 연도 기준)
+  const statsYear = new Date().getFullYear() + State.statsYearOffset;
+  const yearAssets = (State.statsPeriod === 'year' && !isInterest) ? totalAssetsForYearSync(statsYear) : null;
+
   // 기간별 내역 (날짜순)
   const detailTx = list.slice().sort((a,b) => a.date.localeCompare(b.date) || b.createdAt - a.createdAt);
 
@@ -3450,6 +3461,40 @@ function renderStats() {
       <div class="cal-summary-col">
         <div class="cal-summary-label">합계</div>
         <div class="cal-summary-value income tabular">${fmtMoney(interestAllTimeTotal)}</div>
+      </div>
+    </div>
+    ` : yearAssets ? `
+    <div class="cal-summary-row" style="flex-direction:column;margin-bottom:14px;">
+      <div style="display:flex;width:100%;">
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">전년이월</div>
+          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.carryover)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">수입</div>
+          <div class="cal-summary-value income tabular">${fmtMoney(yearAssets.totalIncome)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">지출</div>
+          <div class="cal-summary-value expense tabular">${fmtMoney(yearAssets.totalExpense)}</div>
+        </div>
+      </div>
+
+      <div style="width:100%;border-top:1px solid rgba(0,0,0,0.08);margin:8px 0;"></div>
+
+      <div style="display:flex;width:100%;">
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">예금</div>
+          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.depositExp)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">순지출</div>
+          <div class="cal-summary-value tabular">${fmtMoney(yearAssets.netExpense)}</div>
+        </div>
+        <div class="cal-summary-col">
+          <div class="cal-summary-label">순수입계</div>
+          <div class="cal-summary-value tabular" style="color:${yearAssets.net>=0?'#2563eb':'#dc2626'};">${yearAssets.net>=0?'':'-'}${fmtMoney(Math.abs(yearAssets.net))}</div>
+        </div>
       </div>
     </div>
     ` : `

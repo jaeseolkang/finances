@@ -1,4 +1,4 @@
-// v3.09 | 2026-07-02 KST | 수정: 통계 탭 연간(年) 모드에 홈과 동일한 전년이월/수입/지출/예금/순지출/순수입계 2단 요약 카드 추가(주간/월간/기간설정은 기존 유지) | cache:v213
+// v3.13 | 2026-07-02 KST | 수정: 홈 달력에 "오늘" 이동 버튼 추가, 예산/통계(연간) 페이지의 연도 헤더 폰트 확대 | cache:v217
 'use strict';
 
 // ============================================================
@@ -1487,6 +1487,7 @@ async function renderHome() {
       <button id="prevMonth">${ICONS.chevLeft}</button>
       <button id="monthLabel" style="background:none;border:none;font-size:15px;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;">${monthLabel(State.cursorDate)}</button>
       <button id="nextMonth">${ICONS.chevRight}</button>
+      <button id="goTodayBtn" style="font-size:12.5px;font-weight:700;color:var(--primary);background:var(--primary-light);padding:6px 12px;border-radius:20px;white-space:nowrap;">오늘</button>
     </div>` : ''}
 
     ${viewContent}
@@ -1495,6 +1496,10 @@ async function renderHome() {
   page.querySelector('#goSettings').addEventListener('click', () => switchTab('settings'));
   page.querySelector('#prevMonth')?.addEventListener('click', () => changeMonth(-1));
   page.querySelector('#nextMonth')?.addEventListener('click', () => changeMonth(1));
+  page.querySelector('#goTodayBtn')?.addEventListener('click', () => {
+    State.cursorDate = new Date();
+    renderHome();
+  });
 
   // 날짜 레이블 클릭 → 년/월 빠른 선택 팝업
   page.querySelector('#monthLabel')?.addEventListener('click', () => {
@@ -2018,7 +2023,7 @@ function renderBudget() {
     </div>
     <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:10px; box-shadow:var(--shadow); color:var(--text-1); margin-bottom:14px;">
       <button id="prevYear" style="color:var(--text-2);">${ICONS.chevLeft}</button>
-      <button id="budgetYearLabel" style="background:none;border:none;font-weight:700;color:var(--text-1);cursor:pointer;padding:4px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px;">${year}년 연간 예산 <span style="font-size:11px;color:var(--text-3);">▾</span></button>
+      <button id="budgetYearLabel" style="background:none;border:none;font-weight:800;font-size:20px;color:var(--text-1);cursor:pointer;padding:6px 10px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">${year}년 연간 예산 <span style="font-size:14px;color:var(--text-3);">▾</span></button>
       <button id="nextYear" style="color:var(--text-2);">${ICONS.chevRight}</button>
     </div>
 
@@ -3393,10 +3398,9 @@ function renderStats() {
       .sort((a,b) => b.amt - a.amt);
   }
 
-  let interestPeriodTotal = 0, interestAllTimeTotal = 0;
+  let interestPeriodTotal = 0;
   if (isInterest) {
-    interestPeriodTotal  = Object.values(buildInterestAggMap(range)).reduce((s,r)=>s+r.amount, 0);
-    interestAllTimeTotal = Object.values(buildInterestAggMap({ start: '0000-01-01', end: '9999-12-31' })).reduce((s,r)=>s+r.amount, 0);
+    interestPeriodTotal = Object.values(buildInterestAggMap(range)).reduce((s,r)=>s+r.amount, 0);
   }
 
   page.innerHTML = `
@@ -3429,7 +3433,7 @@ function renderStats() {
     <div class="summary-month" style="justify-content:center; background:var(--card); border-radius:var(--radius-sm); padding:10px; box-shadow:var(--shadow); margin-bottom:14px;">
       ${canNav ? `<button id="statsPrev" style="color:var(--text-2);">${ICONS.chevLeft}</button>` : `<div style="width:28px;"></div>`}
       ${(State.statsPeriod === 'month' || State.statsPeriod === 'year')
-        ? `<button id="statsLabel" style="background:none;border:none;font-weight:700; font-size:14px; flex:1; text-align:center; color:var(--text-1); cursor:pointer; padding:4px 8px; border-radius:8px;">${range.label}</button>`
+        ? `<button id="statsLabel" style="background:none;border:none;font-weight:800; font-size:${State.statsPeriod==='year'?'22px':'14px'}; flex:1; text-align:center; color:var(--text-1); cursor:pointer; padding:4px 8px; border-radius:8px;">${range.label}</button>`
         : `<span style="font-weight:700; font-size:14px; flex:1; text-align:center;">${range.label}</span>`}
       ${canNav ? `<button id="statsNext" style="color:var(--text-2);">${ICONS.chevRight}</button>` : `<div style="width:28px;"></div>`}
     </div>
@@ -3454,13 +3458,9 @@ function renderStats() {
     <!-- 요약 숫자 -->
     ${isInterest ? `
     <div class="cal-summary-row" style="margin-bottom:14px;">
-      <div class="cal-summary-col">
-        <div class="cal-summary-label">이자금액</div>
+      <div class="cal-summary-col" style="flex:1;">
+        <div class="cal-summary-label">이자합계</div>
         <div class="cal-summary-value income tabular">${fmtMoney(interestPeriodTotal)}</div>
-      </div>
-      <div class="cal-summary-col">
-        <div class="cal-summary-label">합계</div>
-        <div class="cal-summary-value income tabular">${fmtMoney(interestAllTimeTotal)}</div>
       </div>
     </div>
     ` : yearAssets ? `
@@ -4026,15 +4026,15 @@ function renderStatsTabDetail(detailTx, isIncome) {
 }
 
 // [이자] 탭: 계정별 이자 합계 집계
-// key → { label(계정명), amount, count, entries:[{txId,date,amount,subName}] }
+// key → { label(계정명), amount, count, entries:[{txId,date,amount,subName}], acct }
 // 대표계정(재정계정) 거래도 포함하기 위해 mainAcctTxs()가 아닌 전체 거래를 날짜로만 필터링한다.
 function buildInterestAggMap(range) {
   const aggMap = {};
   const interestCat = State.categories.find(c => c.type === 'income' && c.name === '이자');
   if (!interestCat) return aggMap;
 
-  const idToName = {};
-  for (const a of (State.linkedAccounts || [])) idToName[a.id] = a.name;
+  const acctById = {};
+  for (const a of (State.linkedAccounts || [])) acctById[a.id] = a;
   const defAcct = (State.linkedAccounts || []).find(a => a.isDefault);
   const mainLabel = defAcct ? defAcct.name : '대표계정';
 
@@ -4044,8 +4044,9 @@ function buildInterestAggMap(range) {
     if (t.date < range.start || t.date > range.end) continue;
 
     const key   = t.accountId || 'default';
-    const label = (t.accountId && idToName[t.accountId]) ? idToName[t.accountId] : mainLabel;
-    if (!aggMap[key]) aggMap[key] = { label, amount: 0, count: 0, entries: [] };
+    const acct  = t.accountId ? acctById[t.accountId] : defAcct;
+    const label = acct ? acct.name : mainLabel;
+    if (!aggMap[key]) aggMap[key] = { label, amount: 0, count: 0, entries: [], acct: acct || null };
 
     for (const l of (t.lines && t.lines.length ? t.lines : [{ subItemId: null, amount: t.amount }])) {
       const si = subItemById(l.subItemId);
@@ -4055,6 +4056,14 @@ function buildInterestAggMap(range) {
     }
   }
   return aggMap;
+}
+
+// 계정 정렬 우선순위: 대표계정(0) → 일반계정(1) → 정기계정(2), 그룹 내에서는 연결계좌 등록순서 그대로
+function interestAcctGroupPriority(acct) {
+  if (!acct) return 1;
+  if (acct.isDefault) return 0;
+  if (acct.accountKind === 'deposit') return 2;
+  return 1;
 }
 
 function renderInterestTab(range) {
@@ -4073,15 +4082,28 @@ function renderInterestTab(range) {
     </div>
   `;
 
+  const acctIndex = {};
+  (State.linkedAccounts || []).forEach((a, i) => { acctIndex[a.id] = i; });
+
   const aggMap = buildInterestAggMap(range);
   const aggRows = Object.entries(aggMap)
     .map(([key, r]) => ({ key, ...r }))
     .sort((a, b) => {
+      // 1순위: 대표계정 → 일반계정 → 정기계정 그룹 순서는 항상 고정
+      const pa = interestAcctGroupPriority(a.acct), pb = interestAcctGroupPriority(b.acct);
+      if (pa !== pb) return pa - pb;
+
+      // 2순위: 같은 그룹 안에서는 선택한 정렬 기준(계정명/건수/이자금액)으로 정렬
       let cmp;
       if (sortKey === 'label') cmp = a.label.localeCompare(b.label, 'ko');
       else if (sortKey === 'count') cmp = a.count - b.count;
       else cmp = a.amount - b.amount;
-      return sortDir === 'asc' ? cmp : -cmp;
+      if (cmp !== 0) return sortDir === 'asc' ? cmp : -cmp;
+
+      // 동점 시: 연결계좌 등록순서로 안정적으로 정렬
+      const ia = a.acct ? (acctIndex[a.acct.id] ?? 999) : -1;
+      const ib = b.acct ? (acctIndex[b.acct.id] ?? 999) : -1;
+      return ia - ib;
     });
 
   if (aggRows.length === 0) {
@@ -4106,6 +4128,7 @@ function renderInterestTab(range) {
     </div>
   `;
 }
+
 
 /* =========================================================
    RENDER: SETTINGS

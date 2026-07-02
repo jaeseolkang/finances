@@ -1,6 +1,6 @@
-// 2026-07-02 KST | CACHE_NAME v2033 (만기체크 90일 확대 + 리스트 화면 표시 후 메일발송으로 변경)
+// 2026-07-02 KST | CACHE_NAME v2035 (팝업 시트 안에도 맨 위로 버튼 추가)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2033';
+const CACHE_NAME = 'gaegyebu-v2035';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

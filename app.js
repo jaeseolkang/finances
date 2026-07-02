@@ -1,4 +1,4 @@
-// v3.21 | 2026-07-02 KST | 수정: 만기 체크 기간을 30일→90일로 확대, "지금 바로 만기 체크"는 화면에 대상 리스트를 먼저 보여주고 버튼으로 메일 발송하도록 변경(자동 백그라운드 체크는 기존처럼 자동 발송) | cache:v225
+// v3.23 | 2026-07-02 KST | 수정: 계정 관리/카테고리 관리 등 팝업 시트 안에도 "맨 위로" 버튼 추가 (시트 내부 스크롤을 감지하는 별도 버튼) | cache:v227
 'use strict';
 
 // ============================================================
@@ -1281,6 +1281,7 @@ function renderShell() {
     </div>
     <button class="fab" id="fabAdd">${ICONS.plus}</button>
     <button class="fab-top" id="fabScrollTop" title="맨 위로">${ICONS.arrowUp}</button>
+    <button class="fab-top" id="fabScrollTopSheet" title="맨 위로" style="bottom:calc(var(--safe-bottom) + 20px); z-index:105;">${ICONS.arrowUp}</button>
     <div class="tabbar" id="tabbar"></div>
     <div class="sheet-backdrop" id="sheetBackdrop"></div>
     <div class="sheet" id="txSheet"></div>
@@ -1311,8 +1312,7 @@ function initScrollTopBtn() {
   if (!btn) return;
   const check = () => {
     const activePage = document.querySelector('.page.active');
-    const isStatsList = State.tab === 'stats' && State.statsType === 'list';
-    if (isStatsList && activePage && activePage.scrollTop > 200) {
+    if (activePage && activePage.scrollTop > 200) {
       btn.classList.add('show');
     } else {
       btn.classList.remove('show');
@@ -1324,6 +1324,35 @@ function initScrollTopBtn() {
     if (activePage) activePage.scrollTo({ top: 0, behavior: 'smooth' });
   });
   window._checkScrollTopBtn = check;
+  initSheetScrollTopBtn();
+}
+
+// 팝업(바텀시트) 안에서도 "맨 위로" 버튼 지원 — 계정 관리/카테고리 관리 등 긴 목록이 있는 모달
+function activeSheetBody() {
+  const openSheets = Array.from(document.querySelectorAll('.sheet.show'));
+  if (!openSheets.length) return null;
+  // 여러 시트가 겹쳐 열려있으면 z-index가 가장 높은(맨 위) 시트를 기준으로 삼는다
+  const topSheet = openSheets.sort((a, b) => (parseInt(getComputedStyle(a).zIndex) || 0) - (parseInt(getComputedStyle(b).zIndex) || 0)).pop();
+  return topSheet.querySelector('.sheet-body');
+}
+
+function initSheetScrollTopBtn() {
+  const btn = document.getElementById('fabScrollTopSheet');
+  if (!btn) return;
+  const check = () => {
+    const body = activeSheetBody();
+    if (body && body.scrollTop > 200) {
+      btn.classList.add('show');
+    } else {
+      btn.classList.remove('show');
+    }
+  };
+  document.body.addEventListener('scroll', check, true);
+  btn.addEventListener('click', () => {
+    const body = activeSheetBody();
+    if (body) body.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  window._checkSheetScrollTopBtn = check;
 }
 
 function renderTabbar() {
@@ -7053,11 +7082,13 @@ function closeAllSheets() {
   State.catStatDetailId = null;
   State.subStatDetailKey = null;
   State.interestDetailKey = null;
+  window._checkSheetScrollTopBtn?.();
 }
 
 function openSheet(id) {
   document.getElementById('sheetBackdrop').classList.add('show');
   document.getElementById(id).classList.add('show');
+  window._checkSheetScrollTopBtn?.();
 }
 
 function closeSheet(id) {
@@ -7066,6 +7097,7 @@ function closeSheet(id) {
   // 남은 시트가 없으면 backdrop도 제거
   const anyOpen = document.querySelectorAll('.sheet.show').length > 0;
   if (!anyOpen) document.getElementById('sheetBackdrop').classList.remove('show');
+  window._checkSheetScrollTopBtn?.();
 }
 
 // 거래입력 시트(txSheet)만 닫기: 일별상세/통계항목상세에서 열렸으면 그 화면으로 복귀, 아니면 전체 닫기

@@ -1,5 +1,6 @@
-// v3.23 | 2026-07-02 KST | 수정: 계정 관리/카테고리 관리 등 팝업 시트 안에도 "맨 위로" 버튼 추가 (시트 내부 스크롤을 감지하는 별도 버튼) | cache:v227
+// v3.24 | 2026-07-02 KST | 수정: 설정 > 정보 > 버전에 하드코딩되어 있던 "v2.94"를 실제 배포 버전과 자동으로 맞춰지도록 수정(APP_VERSION 상수 사용) — 이제 이 화면으로 배포 여부 확인 가능 | cache:v228
 'use strict';
+const APP_VERSION = 'v3.24 (cache v228)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -5409,7 +5410,7 @@ function renderSettings() {
       <div class="settings-group-title">정보</div>
       <div class="settings-row">
         <div class="settings-label">버전</div>
-        <div class="settings-value">v2.94 (cache v1007)</div>
+        <div class="settings-value">${APP_VERSION}</div>
       </div>
       <div class="settings-row" id="rowUpdate" style="cursor:pointer;">
         <div class="settings-label">앱 업데이트</div>

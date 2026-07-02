@@ -1,4 +1,4 @@
-// v3.17 | 2026-07-02 KST | 수정: 계정 탭 연도 필터 기본값을 "전체연도"에서 "당해연도"로 변경(선택 팝업은 기존대로 전체/개별연도 모두 표시) | cache:v221
+// v3.21 | 2026-07-02 KST | 수정: 만기 체크 기간을 30일→90일로 확대, "지금 바로 만기 체크"는 화면에 대상 리스트를 먼저 보여주고 버튼으로 메일 발송하도록 변경(자동 백그라운드 체크는 기존처럼 자동 발송) | cache:v225
 'use strict';
 
 // ============================================================
@@ -1295,6 +1295,7 @@ function renderShell() {
     <div class="sheet" id="subStatDetailSheet" style="max-height:100%; border-radius:0;"></div>
     <div class="sheet" id="excelRangeSheet"></div>
     <div class="sheet" id="backupRangeSheet"></div>
+    <div class="sheet" id="maturitySheet"></div>
     <div class="toast" id="toast"></div>
   `;
   renderTabbar();
@@ -5332,7 +5333,7 @@ function renderSettings() {
       <div class="settings-row" id="rowMaturityCheck" style="cursor:pointer;">
         <div>
           <div class="settings-label">지금 바로 만기 체크</div>
-          <div class="settings-sub">오늘 기준으로 만기 계좌를 확인하고 메일 발송</div>
+          <div class="settings-sub">90일 이내 만기 계좌를 화면에서 확인하고 메일 발송</div>
         </div>
         ${ICONS.chevR}
       </div>
@@ -5662,8 +5663,7 @@ function renderSettings() {
 
   page.querySelector('#rowMaturityCheck').addEventListener('click', async () => {
     showToast('만기 체크 중...');
-    const count = await checkMaturityAndNotify(true);
-    if (count === 0) showToast('만기 임박 계좌가 없어요');
+    await openMaturityCheckSheet();
   });
 
   page.querySelector('#rowReset').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } resetAllData(); });
@@ -5955,6 +5955,45 @@ function isSunday() {
 /* =========================================================
    정기계정 만기 알림 — Gmail MCP via Anthropic API
    ========================================================= */
+const MATURITY_WINDOW_DAYS = 90;
+
+// 정기계정 중 만기일이 오늘 ~ N일 이내인 계좌 목록 (만기일 가까운 순)
+function findMaturityTargets(today) {
+  const d = new Date(); d.setDate(d.getDate() + MATURITY_WINDOW_DAYS);
+  const dateLimit = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const deposits = (State.linkedAccounts || []).filter(a => a.accountKind === 'deposit' && a.maturityDate);
+  return deposits
+    .filter(a => a.maturityDate >= today && a.maturityDate <= dateLimit)
+    .sort((a,b) => a.maturityDate.localeCompare(b.maturityDate));
+}
+
+function maturityDaysLeft(maturityDate, today) {
+  return Math.round((new Date(maturityDate) - new Date(today)) / (1000*60*60*24));
+}
+
+function maturityTag(daysLeft) {
+  return daysLeft === 0 ? '🔴 오늘 만기' : daysLeft <= 7 ? `🟡 ${daysLeft}일 후 만기` : `🟢 ${daysLeft}일 후 만기`;
+}
+
+function buildMaturityMailContent(targets, today) {
+  const appName = State.appName || '교회 회계부';
+  const rows = targets.map(a => {
+    const tag = maturityTag(maturityDaysLeft(a.maturityDate, today));
+    const amt = (a.carryover || 0).toLocaleString('ko-KR');
+    return `• ${tag} | ${a.name} | ${a.maturityDate} | ${amt}원`;
+  }).join('\n');
+  const subject = `[${appName}] 정기계정 만기 알림 (${today})`;
+  const body = `안녕하세요.\n\n정기계정 만기 계좌를 알려드립니다.\n\n${rows}\n\n확인 후 적절한 조치를 취해주세요.\n\n— ${appName}`;
+  return { subject, body };
+}
+
+function openMailtoForMaturity(targets, email, today) {
+  const { subject, body } = buildMaturityMailContent(targets, today);
+  const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailtoUrl;
+}
+
+// 자동 백그라운드 체크 (앱 실행 5초 후, 하루 1회) — 대상 있으면 메일 앱을 바로 연다
 async function checkMaturityAndNotify(force = false) {
   const emailRec = await DB.get('settings', 'maturityEmail');
   if (!emailRec || !emailRec.email) return 0;
@@ -5968,35 +6007,15 @@ async function checkMaturityAndNotify(force = false) {
     if (lastRec && lastRec.date === today) return 0;
   }
 
-  // 만기 30일 이내 날짜 계산
-  const d30 = new Date(); d30.setDate(d30.getDate() + 30);
-  const date30 = `${d30.getFullYear()}-${String(d30.getMonth()+1).padStart(2,'0')}-${String(d30.getDate()).padStart(2,'0')}`;
-
-  // 정기계정 계좌 중 만기일이 오늘 ~ 30일 이내인 것 찾기
-  const deposits = (State.linkedAccounts || []).filter(a => a.isDeposit && a.maturityDate);
-  const targets = deposits.filter(a => a.maturityDate >= today && a.maturityDate <= date30);
+  const targets = findMaturityTargets(today);
 
   if (targets.length === 0) {
     await DB.put('settings', { key: 'maturityLastCheck', date: today });
     return 0;
   }
 
-  // 메일 본문 생성
-  const appName = State.appName || '교회 회계부';
-  const rows = targets.map(a => {
-    const daysLeft = Math.round((new Date(a.maturityDate) - new Date(today)) / (1000*60*60*24));
-    const tag = daysLeft === 0 ? '🔴 오늘 만기' : daysLeft <= 7 ? `🟡 ${daysLeft}일 후 만기` : `🟢 ${daysLeft}일 후 만기`;
-    const amt = (a.carryover || 0).toLocaleString('ko-KR');
-    return `• ${tag} | ${a.name} | ${a.maturityDate} | ${amt}원`;
-  }).join('\n');
-
-  const subject = `[${appName}] 정기계정 만기 알림 (${today})`;
-  const body = `안녕하세요.\n\n정기계정 만기 계좌를 알려드립니다.\n\n${rows}\n\n확인 후 적절한 조치를 취해주세요.\n\n— ${appName}`;
-
-  // mailto로 메일 앱 열기
   try {
-    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    window.location.href = mailtoUrl;
+    openMailtoForMaturity(targets, email, today);
     await DB.put('settings', { key: 'maturityLastCheck', date: today });
     showToast(`📧 만기 알림 ${targets.length}건 — 메일 앱을 열었어요`);
     return targets.length;
@@ -6005,6 +6024,63 @@ async function checkMaturityAndNotify(force = false) {
     showToast('메일 앱 열기 실패');
     return 0;
   }
+}
+
+// 수동 "지금 바로 만기 체크": 화면에 리스트를 먼저 보여주고, 버튼을 눌러야 메일을 발송한다
+async function openMaturityCheckSheet() {
+  const today = todayStr();
+  const targets = findMaturityTargets(today);
+  const emailRec = await DB.get('settings', 'maturityEmail');
+  renderMaturitySheet(targets, today, emailRec && emailRec.email ? emailRec.email : null);
+  openSheet('maturitySheet');
+}
+
+function renderMaturitySheet(targets, today, email) {
+  const sheet = document.getElementById('maturitySheet');
+  sheet.innerHTML = `
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <h3>만기 체크 (${MATURITY_WINDOW_DAYS}일 이내)</h3>
+      <button id="matClose" class="sheet-close-btn">${ICONS.close}닫기</button>
+    </div>
+    <div class="sheet-body">
+      ${targets.length === 0 ? `
+        <div style="padding:32px 8px;text-align:center;color:var(--text-3);font-size:13.5px;">
+          ${MATURITY_WINDOW_DAYS}일 이내 만기인 정기계정이 없어요
+        </div>
+      ` : `
+        <div style="font-size:12.5px;color:var(--text-3);padding:0 2px 12px;">오늘(${today}) 기준 ${MATURITY_WINDOW_DAYS}일 이내 만기인 정기계정 ${targets.length}건입니다.</div>
+        <div class="card" style="padding:0 16px;margin-bottom:14px;">
+          ${targets.map((a, i) => {
+            const daysLeft = maturityDaysLeft(a.maturityDate, today);
+            const tag = maturityTag(daysLeft);
+            return `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;${i < targets.length - 1 ? 'border-bottom:1px solid var(--border);' : ''}">
+              <div style="min-width:0;">
+                <div style="font-weight:700;font-size:14px;color:var(--text-1);">${escapeHTML(a.name)}</div>
+                <div style="font-size:12px;color:var(--text-3);margin-top:2px;">${a.maturityDate} · ${tag}</div>
+              </div>
+              <div style="text-align:right;font-weight:700;font-size:13.5px;color:var(--text-1);white-space:nowrap;">${fmtMoney(a.carryover || 0)}원</div>
+            </div>`;
+          }).join('')}
+        </div>
+      `}
+
+      ${!email ? `
+        <div style="font-size:12.5px;color:var(--text-3);padding:0 2px 12px;">메일을 발송하려면 설정에서 알림 이메일을 먼저 등록해주세요.</div>
+      ` : ''}
+
+      <button class="btn-primary" id="matSendBtn" ${(targets.length === 0 || !email) ? 'disabled style="opacity:0.45;"' : ''}>📧 메일로 발송하기</button>
+    </div>
+  `;
+  sheet.querySelector('#matClose').addEventListener('click', closeAllSheets);
+  sheet.querySelector('#matSendBtn')?.addEventListener('click', async () => {
+    if (targets.length === 0 || !email) return;
+    openMailtoForMaturity(targets, email, today);
+    await DB.put('settings', { key: 'maturityLastCheck', date: today });
+    showToast('📧 메일 앱을 열었어요');
+    closeAllSheets();
+  });
 }
 
 async function checkAndRunAutoBackup() {
@@ -6660,6 +6736,13 @@ function renderBackupRangeSheet() {
       <div style="font-size:12.5px; color:var(--text-3); padding:0 2px 16px;">선택한 기간(연-월-일)의 거래 데이터와 모든 카테고리/이름 정보가 함께 ${isEmail ? '발송됩니다.' : '저장됩니다.'}</div>
       `}
 
+      ${!isEmail ? `
+      <div class="formrow">
+        <label>파일 이름 (선택)</label>
+        <input type="text" class="dateinput" id="bkFileName" placeholder="비워두면 자동으로 생성돼요">
+      </div>
+      ` : ''}
+
       <button class="btn-primary" id="bkGo">${isEmail ? '메일로 발송하기' : 'JSON 백업 파일 만들기'}</button>
     </div>
   `;
@@ -6697,7 +6780,8 @@ function renderBackupRangeSheet() {
     if (backupAction === 'email') {
       sendBackupByEmail(sDate, eDate);
     } else {
-      exportData(sDate, eDate);
+      const customName = sheet.querySelector('#bkFileName')?.value.trim() || null;
+      exportData(sDate, eDate, customName);
     }
     closeAllSheets();
   });
@@ -6775,7 +6859,7 @@ async function sendBackupByEmail(startDate = null, endDate = null) {
   showToast('📥 JSON 다운로드 완료 — 메일에 첨부해 발송해주세요');
 }
 
-async function exportData(startDate, endDate) {
+async function exportData(startDate, endDate, customName = null) {
   // 범위 내 거래만 필터 (인수 없으면 전체)
   const txs = (startDate && endDate)
     ? State.transactions.filter(t => t.date >= startDate && t.date <= endDate)
@@ -6804,7 +6888,10 @@ async function exportData(startDate, endDate) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `backup-${rangeLabel}.json`;
+  // 파일 이름을 지정하지 않으면 기존 방식(backup-범위.json) 그대로 사용
+  let fileName = customName ? customName.replace(/[\\/:*?"<>|]/g, '') : `backup-${rangeLabel}`;
+  if (!/\.json$/i.test(fileName)) fileName += '.json';
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -7237,7 +7324,12 @@ function renderTxStepPick(sheet) {
 /* ---- STEP 2: 중분류 선택 (subGroup이 있는 대분류) ---- */
 function renderTxStepPickGroup(sheet) {
   const cat = catById(State.formCategoryId);
-  const groups = subGroupsOfCategory(State.formCategoryId);
+  // 명부에서 "가리기" 처리된 교인은 헌금 입력 시 이름 선택 목록에 나오지 않게 제외
+  // (subGroup은 교인 등록 시 person과 동일한 id로 생성되므로 id로 매칭)
+  const groups = subGroupsOfCategory(State.formCategoryId).filter(g => {
+    const person = (State.persons || []).find(p => p.id === g.id);
+    return !person || !person.hidden;
+  });
   // subGroups(사람)가 있는 카테고리(예: 헌금)는 ungroupedItems 표시 안 함 — 공통 소분류이므로
   const ungroupedItems = groups.length > 0 ? [] : State.subItems.filter(s => s.categoryId === State.formCategoryId && !s.subGroupId);
 

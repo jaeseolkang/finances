@@ -1,6 +1,6 @@
-// v3.36 | 2026-07-05 KST | 수정: 자동백업(File System Access API) 파일명에도 남아있던 한글("자동백업", 앱이름)을 제거 — autobackup_날짜.json 형식으로 통일, 이제 JSON 백업 전 경로가 한글 없이 ASCII로만 구성됨 | cache:v240
+// v3.41 | 2026-07-05 KST | 개선: 교인 삭제 기능은 이미 있었으나(수정 화면 맨 아래, 눈에 안 띄는 작은 텍스트) 발견하기 어려웠던 문제 — 명부 목록 각 줄에 삭제(휴지통) 아이콘을 바로 추가하고, 수정 화면의 삭제 버튼도 빨간 큰 버튼으로 눈에 띄게 변경 | cache:v245
 'use strict';
-const APP_VERSION = 'v3.36 (cache v240)';
+const APP_VERSION = 'v3.41 (cache v245)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -6314,8 +6314,9 @@ function renderMembers() {
             <span class="toggle-slider"></span>
           </label>
         </td>
-        <td style="padding:8px 4px; text-align:center;">
+        <td style="padding:8px 4px; text-align:center; white-space:nowrap;">
           <button class="member-edit-btn" data-id="${m.id}" style="color:var(--primary);">${ICONS.edit}</button>
+          <button class="member-del-btn" data-id="${m.id}" data-name="${escapeHTML(m.name)}" style="color:var(--expense);margin-left:4px;">${ICONS.trash}</button>
         </td>
       </tr>
       ${hasExtra ? `
@@ -6409,6 +6410,20 @@ function renderMembers() {
       if (m) openMemberEditSheet(m, heongCat);
     });
   });
+  page.querySelectorAll('.member-del-btn').forEach(b => {
+    b.addEventListener('click', () => deleteMemberById(b.dataset.id, b.dataset.name, () => renderMembers()));
+  });
+}
+
+// 교인 삭제(명부 + 헌금 이름선택용 subGroup 동시 삭제). 거래 기록은 그대로 유지됨.
+async function deleteMemberById(id, name, onDone) {
+  if (!confirm(`"${name}"을(를) 명부에서 삭제할까요?\n(기존 거래 데이터는 유지됩니다)`)) return;
+  await DB.del('persons', id);
+  const sg = (State.subGroups || []).find(g => g.id === id);
+  if (sg) await DB.del('subGroups', sg.id);
+  await reloadData();
+  showToast('삭제됐어요');
+  if (onDone) onDone();
 }
 
 function openMemberEditSheet(member, heongCat) {
@@ -6473,7 +6488,7 @@ function openMemberEditSheet(member, heongCat) {
           ${headOptions}
         </select>
       </div>
-      ${!isNew ? `<button id="mEditDel" style="color:var(--expense);font-size:13px;margin-top:8px;">이 교인 삭제</button>` : ''}
+      ${!isNew ? `<button id="mEditDel" style="width:100%;margin-top:16px;padding:12px;border-radius:10px;background:var(--expense-light,#fff1f0);color:var(--expense);font-weight:800;font-size:14px;border:none;">${ICONS.trash} 이 교인 삭제</button>` : ''}
     </div>
   `;
   openSheet('memberEditSheet');
@@ -6515,15 +6530,7 @@ function openMemberEditSheet(member, heongCat) {
   });
   if (!isNew) {
     sheet.querySelector('#mEditDel').addEventListener('click', async () => {
-      if (!confirm(`"${m.name}"을(를) 명부에서 삭제할까요?\n(기존 거래 데이터는 유지됩니다)`)) return;
-      await DB.del('persons', m.id);
-      // subGroups에서도 삭제 (헌금 이름 선택 목록에서 제거)
-      const sg = (State.subGroups || []).find(g => g.id === m.id);
-      if (sg) await DB.del('subGroups', sg.id);
-      await reloadData();
-      closeSubSheet('memberEditSheet');
-      renderMembers();
-      showToast('삭제됐어요');
+      await deleteMemberById(m.id, m.name, () => { closeSubSheet('memberEditSheet'); renderMembers(); });
     });
   }
 }
@@ -7932,16 +7939,28 @@ function renderTxStepPick(sheet) {
 }
 
 /* ---- STEP 2: 중분류 선택 (subGroup이 있는 대분류) ---- */
+let txPickGroupManageHidden = false; // 이름선택 화면: "숨김 관리" 모드 on/off
+
 function renderTxStepPickGroup(sheet) {
   const cat = catById(State.formCategoryId);
+  const heongCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
+  const isHeonCat = heongCat && State.formCategoryId === heongCat.id;
   // 명부에서 "가리기" 처리된 교인은 헌금 입력 시 이름 선택 목록에 나오지 않게 제외
   // (subGroup은 교인 등록 시 person과 동일한 id로 생성되므로 id로 매칭)
-  const groups = subGroupsOfCategory(State.formCategoryId).filter(g => {
+  const allGroupsRaw = subGroupsOfCategory(State.formCategoryId);
+  const groups = allGroupsRaw.filter(g => {
     const person = (State.persons || []).find(p => p.id === g.id);
     return !person || !person.hidden;
   });
   // subGroups(사람)가 있는 카테고리(예: 헌금)는 ungroupedItems 표시 안 함 — 공통 소분류이므로
   const ungroupedItems = groups.length > 0 ? [] : State.subItems.filter(s => s.categoryId === State.formCategoryId && !s.subGroupId);
+
+  // 숨김 관리 모드: 헌금 중분류(=사람) 전부 대상. 명부에 아직 등록 안 된 이름도
+  // (예: 데이터 가져오기로 생긴 이름) 안 보이게 놓치지 않도록 전부 포함시킨다.
+  const manageList = isHeonCat ? allGroupsRaw
+    .map(g => ({ g, person: (State.persons||[]).find(p => p.id === g.id) || { id: g.id, hidden: false, _virtual: true } }))
+    .sort((a,b) => a.g.name.localeCompare(b.g.name,'ko'))
+    : [];
 
   sheet.innerHTML = `
     <div class="sheet-handle"></div>
@@ -7951,6 +7970,21 @@ function renderTxStepPickGroup(sheet) {
       <button id="txClose" class="sheet-close-btn">${ICONS.close}취소</button>
     </div>
     <div class="sheet-body">
+      ${txPickGroupManageHidden ? `
+      <div class="formrow">
+        <label>이름 숨김 관리</label>
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">체크하면 이 이름은 헌금 입력 시 목록에서 안 보여요. 명부에서 "숨김"과 같은 설정이에요.</div>
+        <div style="border:1px solid var(--border);border-radius:10px;max-height:280px;overflow-y:auto;">
+          ${manageList.map(({g, person}) => `
+            <label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px;cursor:pointer;">
+              <input type="checkbox" class="pickgroup-hide-toggle" data-person-id="${person.id}" data-name="${escapeHTML(g.name)}" ${person.hidden?'checked':''} style="accent-color:var(--primary);width:16px;height:16px;">
+              <span style="flex:1;${person.hidden?'color:var(--text-3);':''}">${person.hidden?'🚫 ':''}${escapeHTML(g.name)}</span>
+            </label>
+          `).join('') || `<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12.5px;">관리할 이름이 없어요</div>`}
+        </div>
+      </div>
+      <button id="txManageHiddenBtn" style="margin-top:10px;font-size:13px;color:var(--primary);font-weight:700;padding:6px 0;">← 이름 선택으로 돌아가기</button>
+      ` : `
       <div class="formrow">
         <label>이름 선택</label>
         <div class="catgrid">
@@ -7969,8 +8003,9 @@ function renderTxStepPickGroup(sheet) {
         </div>
       </div>
       <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">
           <button id="txAddGroupBtn" style="font-size:13px;color:var(--primary);font-weight:700;padding:6px 0;">+ 중분류 추가</button>
+          ${isHeonCat ? `<button id="txManageHiddenBtn" style="font-size:13px;color:var(--text-2);font-weight:700;padding:6px 0;">🚫 안 쓰는 이름 숨기기 관리</button>` : ''}
         </div>
         <div id="txAddGroupForm" style="display:none;margin-top:2px;">
           <div style="display:flex;gap:6px;">
@@ -7979,14 +8014,39 @@ function renderTxStepPickGroup(sheet) {
           </div>
         </div>
       </div>
+      `}
     </div>
   `;
+  sheet.querySelector('#txManageHiddenBtn')?.addEventListener('click', () => {
+    txPickGroupManageHidden = !txPickGroupManageHidden;
+    renderTxStepPickGroup(sheet);
+  });
+  sheet.querySelectorAll('.pickgroup-hide-toggle').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const heongCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
+      let p = await DB.get('persons', cb.dataset.personId);
+      if (!p) {
+        // 명부에 아직 없던 이름(데이터 가져오기 등으로 생긴 중분류) — 이 자리에서 새로 등록
+        p = {
+          id: cb.dataset.personId, categoryId: heongCat.id, name: cb.dataset.name,
+          position: '성도', residentId: '', phone: '', address: '', memo: '',
+          hidden: false, createdAt: Date.now(), family: '', generation: '', headId: '',
+        };
+      }
+      p.hidden = cb.checked;
+      await DB.put('persons', p);
+      await reloadData();
+      renderTxStepPickGroup(sheet);
+    });
+  });
   sheet.querySelector('#txBack').addEventListener('click', () => {
+    txPickGroupManageHidden = false;
     State.formStep = 'pick';
     State.formCategoryId = null;
     renderTxSheet();
   });
   sheet.querySelector('#txClose').addEventListener('click', () => {
+    txPickGroupManageHidden = false;
     if (State.editingTx) {
       // 수정 모드에서 중분류 변경 중 취소 → items로 복귀
       State.formSubGroupId = State.editingTx.subGroupId || State.editingTx.personId || null;
@@ -8000,7 +8060,7 @@ function renderTxStepPickGroup(sheet) {
   });
 
   // 중분류 추가 인라인 폼
-  sheet.querySelector('#txAddGroupBtn').addEventListener('click', () => {
+  sheet.querySelector('#txAddGroupBtn')?.addEventListener('click', () => {
     const form = sheet.querySelector('#txAddGroupForm');
     const visible = form.style.display !== 'none';
     form.style.display = visible ? 'none' : 'block';
@@ -8016,14 +8076,27 @@ function renderTxStepPickGroup(sheet) {
     const newGroup = { id: uid(), categoryId: catId, name, order: list.length };
     await DB.put('subGroups', newGroup);
     // 기존 공통 소분류(헌금종류)를 새 중분류에도 자동 생성
-    await reloadData();
     await seedDefaultSubItemsForGroup(newGroup.id, catId);
+
+    // 헌금 카테고리에서 새 이름을 추가한 경우, 명부(persons)에도 자동 등록
+    const heongCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
+    if (heongCat && catId === heongCat.id) {
+      const existingPerson = (State.persons || []).find(p => p.id === newGroup.id);
+      if (!existingPerson) {
+        await DB.put('persons', {
+          id: newGroup.id, categoryId: catId, name,
+          position: '성도', residentId: '', phone: '', address: '', memo: '',
+          hidden: false, createdAt: Date.now(), family: '', generation: '', headId: '',
+        });
+      }
+    }
+
     await reloadData();
     showToast(`"${name}" 추가됐어요`);
     renderTxStepPickGroup(sheet);
   };
-  sheet.querySelector('#txAddGroupSave').addEventListener('click', doAddGroup);
-  sheet.querySelector('#txAddGroupName').addEventListener('keydown', (e) => {
+  sheet.querySelector('#txAddGroupSave')?.addEventListener('click', doAddGroup);
+  sheet.querySelector('#txAddGroupName')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doAddGroup();
   });
 
@@ -9009,8 +9082,15 @@ function renderLinkedAccountsSheet() {
   const sheet = document.getElementById('linkedAccountsSheet');
   const accounts = State.linkedAccounts || [];
 
-  const normalAccts  = accounts.filter(a => a.isDefault || (!a.isDefault && (!a.accountKind || a.accountKind === 'normal')));
-  const depositAccts = accounts.filter(a => !a.isDefault && a.accountKind === 'deposit');
+  const normalAccts  = accounts
+    .filter(a => a.isDefault || (!a.isDefault && (!a.accountKind || a.accountKind === 'normal')))
+    .sort((a, b) => {
+      if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1; // 대표계정은 항상 맨 위
+      return a.name.localeCompare(b.name, 'ko');
+    });
+  const depositAccts = accounts
+    .filter(a => !a.isDefault && a.accountKind === 'deposit')
+    .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
 
   const normalListHTML = normalAccts.length === 0
     ? `<div style="text-align:center;color:var(--text-3);padding:20px 0;font-size:13px;">없음</div>`

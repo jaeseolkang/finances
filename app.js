@@ -1,6 +1,6 @@
-// v3.41 | 2026-07-05 KST | 개선: 교인 삭제 기능은 이미 있었으나(수정 화면 맨 아래, 눈에 안 띄는 작은 텍스트) 발견하기 어려웠던 문제 — 명부 목록 각 줄에 삭제(휴지통) 아이콘을 바로 추가하고, 수정 화면의 삭제 버튼도 빨간 큰 버튼으로 눈에 띄게 변경 | cache:v245
+// v3.43 | 2026-07-05 KST | 개선: 계정 탭의 "일반계정" 표를 이월금-연도별(수입/지출)-지난달-합계 구조로 재구성 (정기계정은 기존 구조 그대로 유지). 연도가 늘어나면 컬럼도 자동으로 늘어남 | cache:v247
 'use strict';
-const APP_VERSION = 'v3.41 (cache v245)';
+const APP_VERSION = 'v3.43 (cache v247)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -4734,7 +4734,50 @@ function calcAcctTotals(year) {
   return result;
 }
 
-// 계정 탭에서 연도 필터 선택지로 사용할 연도 목록 (오름차순, 올해 포함)
+// calcAcctTotals의 월 단위 버전 (특정 YYYY-MM 한 달의 수입/지출만 집계, carryIn 없음)
+function calcAcctMonthTotals(yyyyMM) {
+  const tongCat = State.categories.find(c => c.name === '통장이동' && c.type === 'income');
+  const expCat  = State.categories.find(c => c.name === '예금' && c.type === 'expense');
+  const incomeMap  = {};
+  const expenseMap = {};
+  for (const si of (State.subItems || [])) {
+    if (expCat  && si.categoryId === expCat.id)  incomeMap[si.name]  = si.id;
+    if (tongCat && si.categoryId === tongCat.id) expenseMap[si.name] = si.id;
+  }
+  const idToName = {};
+  for (const a of (State.linkedAccounts || [])) idToName[a.id] = a.name;
+
+  const result = {};
+  const ensure = name => { if (!result[name]) result[name] = {income:0, expense:0}; };
+  const applyOne = (name, date, type, amt) => {
+    if ((date || '').slice(0, 7) !== yyyyMM) return;
+    ensure(name);
+    if (type === 'income') result[name].income += amt; else result[name].expense += amt;
+  };
+
+  for (const t of (State.transactions || [])) {
+    let taggedName = null;
+    if (t.accountId && idToName[t.accountId]) {
+      const name = idToName[t.accountId];
+      const acct = (State.linkedAccounts||[]).find(a => a.id === t.accountId);
+      if (acct && !acct.isDefault) {
+        taggedName = name;
+        applyOne(name, t.date, t.type, t.amount);
+      }
+    }
+    for (const line of (t.lines || [])) {
+      const sid = line.subItemId;
+      const amt = line.amount || 0;
+      for (const [name, id] of Object.entries(incomeMap)) {
+        if (sid === id && name !== taggedName) applyOne(name, t.date, 'income', amt);
+      }
+      for (const [name, id] of Object.entries(expenseMap)) {
+        if (sid === id && name !== taggedName) applyOne(name, t.date, 'expense', amt);
+      }
+    }
+  }
+  return result;
+}
 function allAccountsYears() {
   const years = new Set();
   years.add(new Date().getFullYear());
@@ -4823,26 +4866,65 @@ async function renderAccounts() {
     ? '등록된 정기계정 계좌가 없어요<br><span style="font-size:12px;">설정 → 연결계좌 관리에서 추가하세요</span>'
     : '등록된 계정이 없어요<br><span style="font-size:12px;">설정 → 연결계좌 관리에서 추가하세요</span>';
 
+  // ── 일반계정 전용: 연도별(수입/지출) + 지난달 칼럼 준비 ──
+  const multiYears = sub === 'normal' ? allAccountsYears() : [];
+  const yearTotalsByYear = {};
+  for (const y of multiYears) yearTotalsByYear[y] = calcAcctTotals(y);
+  let lastMonthYM = '', lastMonthLabel = '';
+  if (sub === 'normal') {
+    const d = new Date();
+    d.setDate(1); d.setMonth(d.getMonth() - 1);
+    lastMonthYM = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    lastMonthLabel = `${d.getMonth()+1}월(지난달)`;
+  }
+  const lastMonthTotals = sub === 'normal' ? calcAcctMonthTotals(lastMonthYM) : {};
+
   const rowsHTML = accounts.length === 0
-    ? `<tr><td colspan="${sub==='deposit'?6:5}" style="text-align:center;color:var(--text-3);padding:24px;">${emptyMsg}</td></tr>`
+    ? `<tr><td colspan="${sub==='deposit'?6:(multiYears.length+5)}" style="text-align:center;color:var(--text-3);padding:24px;">${emptyMsg}</td></tr>`
+    : sub === 'normal'
+    ? accounts.map(a => {
+        const carry = a.carryover || 0;
+        const lifetime = totals[a.name] || {income:0, expense:0};
+        const net = carry + lifetime.income - lifetime.expense;
+        const netColor = net >= 0 ? 'var(--primary)' : 'var(--expense)';
+        const yearIncomeCells = multiYears.map(y => {
+          const t = yearTotalsByYear[y][a.name] || {income:0, expense:0};
+          return `<td class="acct-tbl-num income">${fmt(t.income)}</td>`;
+        }).join('');
+        const yearExpenseCells = multiYears.map(y => {
+          const t = yearTotalsByYear[y][a.name] || {income:0, expense:0};
+          return `<td class="acct-tbl-num expense">${fmt(t.expense)}</td>`;
+        }).join('');
+        const lm = lastMonthTotals[a.name] || {income:0, expense:0};
+        return `
+        <tr class="acct-tbl-row" data-acct-id="${a.id}" style="cursor:pointer;border-top:2px solid var(--border);">
+          <td class="acct-tbl-name" rowspan="2">${escapeHTML(shortName(a.name))}</td>
+          <td class="acct-tbl-num" rowspan="2">${fmt(carry)}</td>
+          <td style="font-size:11px;color:var(--text-3);text-align:center;padding:4px 2px;">수입</td>
+          ${yearIncomeCells}
+          <td class="acct-tbl-num income">${fmt(lm.income)}</td>
+          <td class="acct-tbl-num" rowspan="2" style="color:${netColor};font-weight:700;">${net.toLocaleString('ko-KR')}</td>
+        </tr>
+        <tr class="acct-tbl-row" data-acct-id="${a.id}" style="cursor:pointer;">
+          <td style="font-size:11px;color:var(--text-3);text-align:center;padding:4px 2px;">지출</td>
+          ${yearExpenseCells}
+          <td class="acct-tbl-num expense">${fmt(lm.expense)}</td>
+        </tr>`;
+      }).join('')
     : accounts.map(a => {
         const t = yearTotals[a.name] || {income:0, expense:0, carryIn:0};
         const carry = (a.carryover || 0) + (t.carryIn || 0);
         const net   = carry + t.income - t.expense;
         const netColor = net >= 0 ? 'var(--primary)' : 'var(--expense)';
         // 만기일 표시 (정기계정 탭)
-        let maturityTd = '';
-        if (sub === 'deposit') {
-          const md = a.maturityDate || '';
-          const matLabel = md ? md.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$1.$2.$3') : '-';
-          // 만기 경과 여부
-          let matColor = 'var(--text-3)';
-          if (md) {
-            const today = todayStr();
-            matColor = md < today ? 'var(--expense)' : 'var(--primary)';
-          }
-          maturityTd = `<td class="acct-tbl-num" style="color:${matColor};font-size:12px;">${matLabel}</td>`;
+        const md = a.maturityDate || '';
+        const matLabel = md ? md.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$1.$2.$3') : '-';
+        let matColor = 'var(--text-3)';
+        if (md) {
+          const today = todayStr();
+          matColor = md < today ? 'var(--expense)' : 'var(--primary)';
         }
+        const maturityTd = `<td class="acct-tbl-num" style="color:${matColor};font-size:12px;">${matLabel}</td>`;
         return `<tr class="acct-tbl-row" data-acct-id="${a.id}" style="cursor:pointer;">
           <td class="acct-tbl-name">${escapeHTML(shortName(a.name))}</td>
           <td class="acct-tbl-num">${fmt(carry)}</td>
@@ -4908,15 +4990,16 @@ async function renderAccounts() {
     </div>
 
     <div class="acct-tbl-wrap">
-      <table class="acct-tbl" style="min-width:${sub==='deposit'?'580px':'460px'};">
+      <table class="acct-tbl" style="min-width:${sub==='deposit'?'580px':(360+multiYears.length*80)+'px'};">
         <thead>
           <tr>
-            <th class="acct-tbl-name acct-th-sort" data-sort="name">
+            <th class="acct-tbl-name acct-th-sort" data-sort="name" ${sub==='normal'?'rowspan="1"':''}>
               계좌이름<span class="acct-sort-icon">${(sub==='deposit' ? State.depositSortKey : State.normalSortKey)==='name' ? ((sub==='deposit' ? State.depositSortDir : State.normalSortDir)==='asc'?'↑':'↓') : '↕'}</span>
             </th>
             <th class="acct-tbl-num">이월금</th>
-            <th class="acct-tbl-num">수입금</th>
-            <th class="acct-tbl-num">지출금</th>
+            ${sub==='normal'
+              ? `<th class="acct-tbl-num" style="width:40px;"></th>${multiYears.map(y => `<th class="acct-tbl-num">${y}년</th>`).join('')}<th class="acct-tbl-num">${lastMonthLabel}</th>`
+              : `<th class="acct-tbl-num">수입금</th><th class="acct-tbl-num">지출금</th>`}
             <th class="acct-tbl-num">합계</th>
             ${sub==='deposit' ? `<th class="acct-tbl-num acct-th-sort" data-sort="maturity">만기일<span class="acct-sort-icon">${State.depositSortKey==='maturity' ? (State.depositSortDir==='asc'?'↑':'↓') : '↕'}</span></th>` : ''}
           </tr>
@@ -6378,6 +6461,20 @@ function renderMembers() {
         </thead>
         <tbody>${bodyRows}</tbody>
       </table>
+      <div style="display:flex;gap:8px;margin-top:14px;padding:0 2px;">
+        <div style="flex:1;background:var(--surface-2,var(--bg));border-radius:12px;padding:12px 8px;text-align:center;">
+          <div style="font-size:11.5px;color:var(--text-3);font-weight:700;">전체교인</div>
+          <div style="font-size:19px;font-weight:800;margin-top:2px;">${members.length}<span style="font-size:12px;font-weight:600;color:var(--text-3);">명</span></div>
+        </div>
+        <div style="flex:1;background:var(--surface-2,var(--bg));border-radius:12px;padding:12px 8px;text-align:center;">
+          <div style="font-size:11.5px;color:var(--text-3);font-weight:700;">정교인</div>
+          <div style="font-size:19px;font-weight:800;margin-top:2px;color:var(--primary);">${members.filter(m=>!m.hidden).length}<span style="font-size:12px;font-weight:600;color:var(--text-3);">명</span></div>
+        </div>
+        <div style="flex:1;background:var(--surface-2,var(--bg));border-radius:12px;padding:12px 8px;text-align:center;">
+          <div style="font-size:11.5px;color:var(--text-3);font-weight:700;">숨김교인</div>
+          <div style="font-size:19px;font-weight:800;margin-top:2px;color:var(--text-3);">${members.filter(m=>m.hidden).length}<span style="font-size:12px;font-weight:600;color:var(--text-3);">명</span></div>
+        </div>
+      </div>
       `}
     </div>
   `;
@@ -6592,10 +6689,12 @@ function maturityTag(daysLeft) {
 
 function buildMaturityMailContent(targets, today) {
   const appName = State.appName || '교회 회계부';
+  const acctBalanceMap = calcAcctBalanceMap(); // 계좌별 현재 잔액(개설 시 이월금 + 이후 입출금 반영)
   const rows = targets.map(a => {
     const tag = maturityTag(maturityDaysLeft(a.maturityDate, today));
-    const amt = (a.carryover || 0).toLocaleString('ko-KR');
-    return `• ${tag} | ${a.name} | ${a.maturityDate} | ${amt}원`;
+    const balance = acctBalanceMap[a.name] !== undefined ? acctBalanceMap[a.name] : (a.carryover || 0);
+    const amt = balance.toLocaleString('ko-KR');
+    return `• ${tag} | 계좌: ${a.name} | 만기일: ${a.maturityDate} | 잔액: ${amt}원`;
   }).join('\n');
   const subject = `[${appName}] 정기계정 만기 알림 (${today})`;
   const body = `안녕하세요.\n\n정기계정 만기 계좌를 알려드립니다.\n\n${rows}\n\n확인 후 적절한 조치를 취해주세요.\n\n— ${appName}`;
@@ -6652,6 +6751,7 @@ async function openMaturityCheckSheet() {
 
 function renderMaturitySheet(targets, today, email) {
   const sheet = document.getElementById('maturitySheet');
+  const acctBalanceMap = calcAcctBalanceMap(); // 계좌별 실제 현재 잔액 (개설 시 이월금 + 이후 입출금)
   sheet.innerHTML = `
     <div class="sheet-handle"></div>
     <div class="sheet-head">
@@ -6675,7 +6775,7 @@ function renderMaturitySheet(targets, today, email) {
                 <div style="font-weight:700;font-size:14px;color:var(--text-1);">${escapeHTML(a.name)}</div>
                 <div style="font-size:12px;color:var(--text-3);margin-top:2px;">${a.maturityDate} · ${tag}</div>
               </div>
-              <div style="text-align:right;font-weight:700;font-size:13.5px;color:var(--text-1);white-space:nowrap;">${fmtMoney(a.carryover || 0)}원</div>
+              <div style="text-align:right;font-weight:700;font-size:13.5px;color:var(--text-1);white-space:nowrap;">${fmtMoney(acctBalanceMap[a.name] !== undefined ? acctBalanceMap[a.name] : (a.carryover || 0))}원</div>
             </div>`;
           }).join('')}
         </div>

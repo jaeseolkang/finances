@@ -1,6 +1,6 @@
-// v3.53 | 2026-07-05 KST | 추가: 통계 화면 기간선택에 "일일" 추가(제일 앞) — 특정 하루를 이전/다음 화살표로 넘겨가며 그날의 수입/지출/합계를 확인 가능 | cache:v257
+// v3.55 | 2026-07-05 KST | 변경: 항목구조표에서 헌금처럼 "중분류 자리에 사람이 들어가는" 카테고리는 교인 수가 많아지면(예: 500명) 표가 감당 안 되므로, 사람별로 안 쪼개고 헌금종류(소분류)만 중복없이 모아서 보여주도록 되돌림 — 명부 자동등록/개인별 헌금 입력/통계 등 실제 데이터 관리 로직은 전혀 안 건드림, 순전히 이 화면 표시 방식만 변경 | cache:v259
 'use strict';
-const APP_VERSION = 'v3.53 (cache v257)';
+const APP_VERSION = 'v3.55 (cache v259)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -4746,17 +4746,32 @@ function openItemStructureSheet() {
       const allSubs = (State.subItems||[])
         .filter(s => s.categoryId === cat.id)
         .sort((a,b) => a.name.localeCompare(b.name,'ko'));
-      // subGroup별 그룹핑
+      // 이 카테고리가 "이름별" 구조(헌금처럼 중분류 자리에 사람이 들어가는 카테고리)인지 확인.
+      // 교인이 수백 명이면 항목구조표에 다 펼쳐 보이는 게 오히려 안 보기 힘드니,
+      // 이런 카테고리는 사람별로 안 쪼개고 헌금종류(소분류)만 이름 중복 없이 모아서 보여준다.
+      // (명부 등록·개인별 헌금 입력·통계는 이 화면과 무관하게 그대로 정상 작동함)
+      const catSubGroups = (State.subGroups||[]).filter(g => g.categoryId === cat.id);
       const sgMap = new Map();
-      const direct = [];
-      for (const s of allSubs) {
-        if (s.subGroupId) {
-          const sg = (State.subGroups||[]).find(g => g.id === s.subGroupId);
-          const sgName = sg ? sg.name : s.name;
-          if (!sgMap.has(s.subGroupId)) sgMap.set(s.subGroupId, {name:sgName, items:[]});
-          sgMap.get(s.subGroupId).items.push(s);
-        } else {
+      let direct = [];
+      if (catSubGroups.length > 0) {
+        // 사람 기반 카테고리 → 소분류 이름만 중복 제거해서 나열
+        const seenNames = new Set();
+        for (const s of allSubs) {
+          if (seenNames.has(s.name)) continue;
+          seenNames.add(s.name);
           direct.push(s);
+        }
+      } else {
+        // 일반 카테고리 → 기존처럼 subGroup별로 그룹핑
+        for (const s of allSubs) {
+          if (s.subGroupId) {
+            const sg = (State.subGroups||[]).find(g => g.id === s.subGroupId);
+            const sgName = sg ? sg.name : s.name;
+            if (!sgMap.has(s.subGroupId)) sgMap.set(s.subGroupId, {name:sgName, items:[]});
+            sgMap.get(s.subGroupId).items.push(s);
+          } else {
+            direct.push(s);
+          }
         }
       }
       if (sgMap.size === 0 && direct.length === 0) continue;

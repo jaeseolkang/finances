@@ -1,6 +1,6 @@
-// v3.64 | 2026-07-05 KST | 수정: 통계>수입>내용 탭에 보이는 "헌금 종류별 합계/건수" 목록이 인쇄와 엑셀에서 통째로 빠져있던 버그 — 인쇄는 화면에 없던 "개인별 명세"만 나오고, 엑셀도 개인별헌금 시트만 있었음. 이제 인쇄 맨 위와 엑셀 첫 시트("내용별집계")에 화면과 동일한 내용별 건수/금액이 포함됨 | cache:v268
+// v3.69 | 2026-07-05 KST | 추가: 교인명부에 🖨️인쇄/📥엑셀 버튼 추가 — 이름순 정렬로 이름/직분/가족/세대/전화번호/주민번호/주소/숨김여부 전부 포함해서 내보냄 | cache:v273
 'use strict';
-const APP_VERSION = 'v3.64 (cache v268)';
+const APP_VERSION = 'v3.69 (cache v273)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -1167,13 +1167,15 @@ const TABS = [
 
 /* ── 공통 인쇄 헬퍼 ── */
 function doPrint(html) {
-  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  // iOS에서 홈 화면에 설치한 앱(독립 실행 모드, standalone)은 window.print() 자체가 작동하지 않는다.
+  // 그래서 모바일은 반드시 "새 사파리 탭"으로 열어야 인쇄가 된다 — PC와 통일했다가 이 제약을
+  // 놓쳐서 원래대로 되돌린다. 다만 window.open()은 팝업 차단에 걸리기 쉬워서, 그 대신
+  // <a> 링크를 만들어 직접 클릭시키는 방식을 쓴다(사용자 탭과 더 확실하게 연결되어 차단될 확률이 낮음).
+  const isMobile = /iphone|ipad|ipod/i.test(navigator.userAgent);
 
-  if (isIOS) {
-    // iOS: 새 탭(Blob)으로 열어야 인쇄 가능
+  if (isMobile) {
     _doPrintBlob(html);
   } else {
-    // PC/Android: print-area 방식
     const area = document.getElementById('print-area');
     area.innerHTML = html;
     area.style.display = 'block';
@@ -1288,8 +1290,33 @@ function _doPrintBlob(html) {
 
   const blob = new Blob([fullHTML], {type:'text/html'});
   const url  = URL.createObjectURL(blob);
-  window.open(url, '_blank');
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  // iOS 홈 화면 설치 앱(독립 실행 모드)에서는 자바스크립트가 자동으로 클릭시키는 링크는
+  // 새 창으로 안 열리고, 사용자가 손가락으로 직접 누른 링크만 열린다.
+  // 그래서 자동 클릭 대신, 화면에 진짜 링크 버튼을 띄워서 사용자가 직접 누르게 한다.
+  showManualPrintLink(url);
+}
+
+// 사용자가 직접 눌러야 새 탭이 열리는 인쇄용 링크 오버레이
+// (iOS 홈 화면 설치 앱은 자동 클릭으로는 새 창이 안 열려서 진짜 탭이 필요함)
+function showManualPrintLink(url) {
+  const old = document.getElementById('printLinkOverlay');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'printLinkOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:24px;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:16px;padding:24px 20px;max-width:320px;width:100%;text-align:center;">
+      <div style="font-size:32px;margin-bottom:10px;">🖨️</div>
+      <div style="font-size:15px;font-weight:800;margin-bottom:6px;">인쇄 준비가 됐어요</div>
+      <div style="font-size:13px;color:#666;margin-bottom:18px;line-height:1.5;">아래 버튼을 눌러 인쇄 화면을 열어주세요</div>
+      <a href="${url}" target="_blank" rel="noopener" id="printLinkBtn" style="display:block;background:#1d4ed8;color:#fff;font-size:15px;font-weight:800;padding:14px;border-radius:12px;text-decoration:none;margin-bottom:10px;">인쇄 화면 열기</a>
+      <button id="printLinkCancel" style="font-size:13px;color:#888;font-weight:600;padding:8px;">닫기</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const closeOverlay = () => { overlay.remove(); URL.revokeObjectURL(url); };
+  overlay.querySelector('#printLinkBtn').addEventListener('click', () => setTimeout(closeOverlay, 300));
+  overlay.querySelector('#printLinkCancel').addEventListener('click', closeOverlay);
 }
 
 /* =========================================================
@@ -6792,6 +6819,8 @@ function renderMembers() {
           <button id="viewName" style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;${viewMode==='name'?'background:#fff;color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,0.1);':'color:var(--text-3);'}">이름순</button>
         </div>
         <button id="memberAdd" style="color:var(--primary);font-weight:800;font-size:14px;${viewMode==='donation'?'display:none;':''}">+ 추가</button>
+        <button id="memberExcel" style="font-size:13px;color:#217346;font-weight:700;padding:6px 8px;border-radius:8px;background:#E8F5E9;${viewMode==='donation'?'display:none;':''}">📥</button>
+        <button id="memberPrint" style="font-size:13px;color:var(--primary);font-weight:700;padding:6px 8px;border-radius:8px;background:var(--primary-light);${viewMode==='donation'?'display:none;':''}">🖨️</button>
       </div>
     </div>
     <div style="padding:0 0 120px;">
@@ -6838,6 +6867,8 @@ function renderMembers() {
   page.querySelector('#viewFamily').addEventListener('click', () => { State.memberView = 'family'; renderMembers(); });
   page.querySelector('#viewName').addEventListener('click', () => { State.memberView = 'name'; renderMembers(); });
   page.querySelector('#memberAdd').addEventListener('click', () => openMemberEditSheet(null, heongCat));
+  page.querySelector('#memberPrint')?.addEventListener('click', () => printMembers(members));
+  page.querySelector('#memberExcel')?.addEventListener('click', () => exportMembersToExcel(members));
   page.querySelectorAll('.member-hidden-toggle').forEach(cb => {
     cb.addEventListener('change', async () => {
       const p = await DB.get('persons', cb.dataset.id);
@@ -6868,6 +6899,85 @@ async function deleteMemberById(id, name, onDone) {
   await reloadData();
   showToast('삭제됐어요');
   if (onDone) onDone();
+}
+
+// ── 교인명부 인쇄 ──
+function printMembers(members) {
+  const rows = [...members].sort((a,b) => a.name.localeCompare(b.name,'ko'));
+  const total = rows.length;
+  const activeCount = rows.filter(m=>!m.hidden).length;
+  const hiddenCount = rows.filter(m=>m.hidden).length;
+
+  const pageHeader = `
+    <div class="print-title">🙏 교인 명부</div>
+    <div class="print-period">${new Date().toLocaleDateString('ko-KR')}</div>
+    <div class="print-summary">
+      <div class="print-summary-item"><div class="print-summary-label">전체교인</div><div class="print-summary-value">${total}명</div></div>
+      <div class="print-summary-item"><div class="print-summary-label">정교인</div><div class="print-summary-value income">${activeCount}명</div></div>
+      <div class="print-summary-item"><div class="print-summary-label">숨김교인</div><div class="print-summary-value">${hiddenCount}명</div></div>
+    </div>`;
+
+  const TH = (txt, w='') => `<th style="padding:3pt 4pt;border:0.5pt solid #3a6fa0;background:#1F4E79;color:#fff;text-align:left;font-size:7.5pt;${w?'width:'+w+';':''}-webkit-print-color-adjust:exact;print-color-adjust:exact;">${txt}</th>`;
+  const TD = (txt) => `<td style="padding:2.5pt 4pt;border:0.5pt solid #aaa;font-size:7.5pt;">${txt}</td>`;
+
+  const headerRow = `<tr>${TH('이름','12%')}${TH('직분','10%')}${TH('가족','10%')}${TH('세대','8%')}${TH('전화번호','15%')}${TH('주민번호','13%')}${TH('주소','22%')}${TH('숨김','6%')}</tr>`;
+  const bodyRows = rows.map(m => `<tr>
+    ${TD(escapeHTML(m.name))}
+    ${TD(escapeHTML(m.position||''))}
+    ${TD(escapeHTML(m.family||''))}
+    ${TD(escapeHTML(m.generation||''))}
+    ${TD(escapeHTML(m.phone||''))}
+    ${TD(escapeHTML(m.residentId||''))}
+    ${TD(escapeHTML(m.address||''))}
+    ${TD(m.hidden?'숨김':'')}
+  </tr>`).join('');
+
+  const html = `
+    <div class="print-page" style="display:block;">
+      <div class="page-inner">
+        ${pageHeader}
+        <table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:7.5pt;">
+          <thead>${headerRow}</thead>
+          <tbody>${rows.length ? bodyRows : `<tr><td colspan="8" style="text-align:center;padding:12pt;color:#888;">등록된 교인이 없습니다</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+  doPrint(html);
+}
+
+// ── 교인명부 엑셀 내보내기 ──
+function exportMembersToExcel(members) {
+  const rows = [...members].sort((a,b) => a.name.localeCompare(b.name,'ko'));
+  const aoa = [];
+  aoa.push([`교인 명부 — ${todayStr()}`]);
+  aoa.push(['이름','직분','가족','세대','전화번호','주민번호','주소','메모','숨김여부']);
+  for (const m of rows) {
+    aoa.push([m.name, m.position||'', m.family||'', m.generation||'', m.phone||'', m.residentId||'', m.address||'', m.memo||'', m.hidden?'숨김':'']);
+  }
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:12},{wch:10},{wch:10},{wch:8},{wch:15},{wch:16},{wch:24},{wch:20},{wch:8}];
+  ws['!merges'] = [{ s:{r:0,c:0}, e:{r:0,c:8} }];
+
+  const gBdr = {style:'thin', color:{rgb:'CCCCCC'}};
+  const allGray = {top:gBdr,bottom:gBdr,left:gBdr,right:gBdr};
+  const headerFill = {patternType:'solid', fgColor:{rgb:'1F4E79'}};
+  const whiteFont = {bold:true, color:{rgb:'FFFFFF'}};
+  for (let c=0;c<9;c++) {
+    const addr = XLSX.utils.encode_cell({r:1,c});
+    if (ws[addr]) ws[addr].s = { fill:headerFill, font:whiteFont, border:allGray, alignment:{horizontal:'center'} };
+  }
+  for (let r=2;r<aoa.length;r++) {
+    for (let c=0;c<9;c++) {
+      const addr = XLSX.utils.encode_cell({r,c});
+      if (ws[addr]) ws[addr].s = { border: allGray };
+    }
+  }
+  ws['!pageSetup'] = { paperSize:9, orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0 };
+
+  XLSX.utils.book_append_sheet(wb, ws, '교인명부');
+  XLSX.writeFile(wb, `교인명부_${todayStr()}.xlsx`);
 }
 
 function openMemberEditSheet(member, heongCat) {

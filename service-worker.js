@@ -1,6 +1,6 @@
-// 2026-07-05 KST | CACHE_NAME v2088 (통계에서 통장이동 수입 제외)
+// 2026-07-08 KST | CACHE_NAME v2091 (통계>내용 상세/명부/총자산 이름순 정렬 적용)
 'use strict';
-const CACHE_NAME = 'gaegyebu-v2088';
+const CACHE_NAME = 'gaegyebu-v2091';
 const ASSETS = ['./', './index.html', './app.js', './xlsx-js-style.min.js', './jspdf.umd.min.js', './html2canvas.min.js', './manifest.json'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });

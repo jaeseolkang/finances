@@ -1,6 +1,6 @@
-// v3.76 | 2026-07-05 KST | 수정: 통계에서 수입 집계할 때 "통장이동"(다른 계좌에서 온 내부이체, 진짜 새 수입 아님)이 같이 잡히던 문제 — 통계/내용 탭의 카테고리별·내용별 집계(화면+인쇄)와 월간/기간설정 요약카드의 "총수입"에서 제외. (연간 요약카드는 계정 탭 잔액계산과 공유하는 함수라 이번엔 그대로 둠 — 필요하시면 별도로 분리해드릴 수 있음) | cache:v280
+// v3.79 | 2026-07-08 KST | 수정: 통계>내용 탭에서 헌금종류/이자 클릭 시 나오는 상세 목록이 날짜 그룹 내에서 이름순 정렬되도록 수정. 교인명부(가족보기) 미분류 인원, 총자산 화면의 연결계좌(일반/정기) 목록도 이름순 정렬 적용 — 앱 전반 출력/통계 정렬 일관성 점검 | cache:v283
 'use strict';
-const APP_VERSION = 'v3.76 (cache v280)';
+const APP_VERSION = 'v3.79 (cache v283)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -3483,7 +3483,7 @@ function printStats() {
 
   // ── 내용 탭: 집계 데이터 ──
   const detailTx = listForBreakdown.slice().sort((a,b) => a.date.localeCompare(b.date));
-  const aggMap = buildStatsAggMap(detailTx, isIncome);
+  const aggMap = buildStatsAggMap(detailTx, isIncome, range);
   const aggRows = Object.entries(aggMap)
     .map(([key,r]) => ({key,...r}))
     .sort((a,b) => b.amount - a.amount);
@@ -3995,7 +3995,7 @@ function renderStats() {
         : (State.statsView === 'stats'
             ? `${renderStatsTabBars(statRows, statTotal, isIncome)}
                ${!isIncome ? `<div style="margin-top:6px;">${renderExpenseTableA4(list, range)}</div>` : ''}`
-            : renderStatsTabDetail(detailTx, isIncome))
+            : renderStatsTabDetail(detailTx, isIncome, range))
     }
   `;
 
@@ -4613,19 +4613,44 @@ function renderStatsTabBars(rows, total, isIncome) {
 
 // [내용] 탭: 수입=헌금 종류별 / 지출=대분류/소분류 집계 테이블
 // 통계 [내용] 탭 집계: key → { label, amount, count, entries:[{txId,date,amount}] }
-function buildStatsAggMap(detailTx, isIncome) {
+function buildStatsAggMap(detailTx, isIncome, range) {
   const aggMap = {};
   if (isIncome) {
     // 수입: 헌금 종류(세부항목 이름) 기준으로 집계
+    // 단, "이자"는 계좌마다 소분류명(예금이자/적금이자/기타이자 등)이 달라도
+    // 당해년도 모든 계좌의 이자를 하나로 합쳐서 "이자" 한 줄로 보여준다.
+    // 혹시 "이자"라는 이름의 카테고리가 중복으로 여러 개 있어도(예전 데이터 마이그레이션 흔적 등)
+    // 전부 다 잡히도록 이름이 "이자"인 income 카테고리를 전부 매칭한다.
+    const interestCatIdsForAgg = new Set(
+      State.categories.filter(c => c.type === 'income' && c.name === '이자').map(c => c.id)
+    );
     for (const t of detailTx) {
+      const isInterestTx = interestCatIdsForAgg.has(t.categoryId);
+      // detailTx는 재정계정(mainAcctTxs) 기준이라 서브계좌에 기록된 이자가 빠진다.
+      // range가 주어지면 이자는 아래에서 전체 계좌 기준으로 다시 집계하므로 여기서는 건너뛴다.
+      if (isInterestTx && range) continue;
       for (const l of (t.lines || [])) {
         const si  = subItemById(l.subItemId);
-        const key = si ? si.name : 'etc';
-        const lbl = key;
+        const key = isInterestTx ? '__interest__' : (si ? si.name : 'etc');
+        const lbl = isInterestTx ? '이자' : key;
         if (!aggMap[key]) aggMap[key] = { label: lbl, amount: 0, count: 0, entries: [] };
         aggMap[key].amount += l.amount;
         aggMap[key].count  += 1;
         aggMap[key].entries.push({ txId: t.id, date: t.date, amount: l.amount, categoryId: t.categoryId, subGroupId: t.subGroupId || t.personId });
+      }
+    }
+    // range가 주어지면 "이자"는 재정계정뿐 아니라 모든(서브)계좌에 입력된 이자를 합산한다.
+    if (range && interestCatIdsForAgg.size > 0) {
+      for (const t of State.transactions) {
+        if (t.type !== 'income') continue;
+        if (!interestCatIdsForAgg.has(t.categoryId)) continue;
+        if (t.date < range.start || t.date > range.end) continue;
+        for (const l of (t.lines && t.lines.length ? t.lines : [{ subItemId: null, amount: t.amount }])) {
+          if (!aggMap['__interest__']) aggMap['__interest__'] = { label: '이자', amount: 0, count: 0, entries: [] };
+          aggMap['__interest__'].amount += l.amount;
+          aggMap['__interest__'].count  += 1;
+          aggMap['__interest__'].entries.push({ txId: t.id, date: t.date, amount: l.amount, categoryId: t.categoryId, subGroupId: t.subGroupId || t.personId });
+        }
       }
     }
   } else {
@@ -4646,7 +4671,7 @@ function buildStatsAggMap(detailTx, isIncome) {
   return aggMap;
 }
 
-function renderStatsTabDetail(detailTx, isIncome) {
+function renderStatsTabDetail(detailTx, isIncome, range) {
   const sortKey = State.statsSortKey;
   const sortDir = State.statsSortDir;
   const arrow = sortDir === 'desc' ? ' ▼' : ' ▲';
@@ -4666,7 +4691,7 @@ function renderStatsTabDetail(detailTx, isIncome) {
     return header + `<div class="card" style="padding:6px 16px;">${emptyStateHTML('내역이 없어요', `선택한 기간의 ${isIncome?'수입':'지출'} 내역이 없습니다`)}</div>`;
   }
 
-  const aggMap = buildStatsAggMap(detailTx, isIncome);
+  const aggMap = buildStatsAggMap(detailTx, isIncome, range);
 
   const aggRows = Object.entries(aggMap)
     .map(([key, r]) => ({ key, ...r }))
@@ -4703,8 +4728,12 @@ function renderStatsTabDetail(detailTx, isIncome) {
 // 대표계정(재정계정) 거래도 포함하기 위해 mainAcctTxs()가 아닌 전체 거래를 날짜로만 필터링한다.
 function buildInterestAggMap(range) {
   const aggMap = {};
-  const interestCat = State.categories.find(c => c.type === 'income' && c.name === '이자');
-  if (!interestCat) return aggMap;
+  // 혹시 "이자"라는 이름의 카테고리가 중복으로 여러 개 있어도(예: 예전 데이터 마이그레이션 흔적)
+  // 전부 다 잡히도록 이름이 "이자"인 income 카테고리를 전부 매칭한다.
+  const interestCatIds = new Set(
+    State.categories.filter(c => c.type === 'income' && c.name === '이자').map(c => c.id)
+  );
+  if (interestCatIds.size === 0) return aggMap;
 
   const acctById = {};
   for (const a of (State.linkedAccounts || [])) acctById[a.id] = a;
@@ -4713,7 +4742,7 @@ function buildInterestAggMap(range) {
 
   for (const t of State.transactions) {
     if (t.type !== 'income') continue;
-    if (t.categoryId !== interestCat.id) continue;
+    if (!interestCatIds.has(t.categoryId)) continue;
     if (t.date < range.start || t.date > range.end) continue;
 
     const key   = t.accountId || 'default';
@@ -5428,7 +5457,7 @@ async function renderAccounts() {
   // ── 연도 필터 적용 합계 (일반계정/정기계정 표 + 인쇄/엑셀에 사용) ──
   const selectedYear = State.accountsYear || 'all';
   const yearTotals = selectedYear === 'all' ? totals : calcAcctTotals(selectedYear);
-  const nonDefaultAccts = (State.linkedAccounts || []).filter(a => !a.isDefault);
+  const nonDefaultAccts = (State.linkedAccounts || []).filter(a => !a.isDefault).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
 
   let normalCarry = 0, normalIncome = 0, normalExpense = 0;
   let depositCarry = 0, depositIncome = 0, depositExpense = 0;
@@ -7095,7 +7124,7 @@ function renderMembers() {
     </tr>
     ${ms.map(m => memberRow(m, true)).join('')}
   `;}).join('');
-  const noGroupRows = noGroup.map(m => memberRow(m, false)).join('');
+  const noGroupRows = noGroup.slice().sort((a, b) => a.name.localeCompare(b.name, 'ko')).map(m => memberRow(m, false)).join('');
 
   // 이름순 보기
   const nameRows = [...members].sort((a, b) => a.name.localeCompare(b.name, 'ko')).map(m => memberRow(m, false)).join('');
@@ -9836,12 +9865,25 @@ function renderSubStatDetail(key) {
   const isIncome = State.statsType === 'income';
   const allTx  = txInPeriod(range.start, range.end);
   const detailTx = allTx.filter(t => t.type === State.statsType);
-  const aggMap = buildStatsAggMap(detailTx, isIncome);
+  const aggMap = buildStatsAggMap(detailTx, isIncome, range);
   const agg = aggMap[key] || { label: '내역', amount: 0, count: 0, entries: [] };
 
-  const entries = agg.entries.slice().sort((a,b) => a.date.localeCompare(b.date));
+  const entries = agg.entries.slice().map(e => {
+    const srcTx = State.transactions.find(x => x.id === e.txId);
+    const cat = srcTx ? txCatInfo(srcTx) : catFallbackInfo(e.categoryId);
+    // 수입(헌금)이면 중분류(사람 이름) 표시, 지출이면 카테고리 이름
+    let rowLabel;
+    if (isIncome && e.subGroupId) {
+      const sgName = srcTx ? txSubGroupName(srcTx) : null;
+      const sg = sgName ? { name: sgName } : (State.subGroups||[]).find(g=>g.id===e.subGroupId);
+      rowLabel = sg ? sg.name : (cat.icon ? cat.icon+' '+cat.name : cat.name);
+    } else {
+      rowLabel = (cat.icon ? cat.icon+' ' : '') + cat.name;
+    }
+    return { ...e, rowLabel };
+  }).sort((a,b) => a.date.localeCompare(b.date) || a.rowLabel.localeCompare(b.rowLabel, 'ko'));
 
-  // 날짜별 그룹화
+  // 날짜별 그룹화 (그룹 내부는 이름순 정렬된 상태 유지)
   const byDate = {};
   for (const e of entries) {
     (byDate[e.date] = byDate[e.date] || []).push(e);
@@ -9867,17 +9909,7 @@ function renderSubStatDetail(key) {
             <div class="section-title">${dayLabel(d)}</div>
             <div class="card" style="padding:0 16px; margin-bottom:14px;">
               ${byDate[d].map(e => {
-                const srcTx = State.transactions.find(x => x.id === e.txId);
-                const cat = srcTx ? txCatInfo(srcTx) : catFallbackInfo(e.categoryId);
-                // 수입(헌금)이면 중분류(사람 이름) 표시, 지출이면 카테고리 이름
-                let rowLabel;
-                if (isIncome && e.subGroupId) {
-                  const sgName = srcTx ? txSubGroupName(srcTx) : null;
-                  const sg = sgName ? { name: sgName } : (State.subGroups||[]).find(g=>g.id===e.subGroupId);
-                  rowLabel = sg ? sg.name : (cat.icon ? cat.icon+' '+cat.name : cat.name);
-                } else {
-                  rowLabel = (cat.icon ? cat.icon+' ' : '') + cat.name;
-                }
+                const rowLabel = e.rowLabel;
                 return `
                   <div class="stats-agg-row tx-item" data-id="${e.txId}" style="cursor:pointer;">
                     <div class="stats-agg-label">${escapeHTML(rowLabel)}</div>
@@ -9910,9 +9942,9 @@ function renderInterestDetail(key) {
   const aggMap = buildInterestAggMap(range);
   const agg = aggMap[key] || { label: '내역', amount: 0, count: 0, entries: [] };
 
-  const entries = agg.entries.slice().sort((a,b) => a.date.localeCompare(b.date));
+  const entries = agg.entries.slice().sort((a,b) => a.date.localeCompare(b.date) || a.subName.localeCompare(b.subName, 'ko'));
 
-  // 날짜별 그룹화
+  // 날짜별 그룹화 (그룹 내부는 이름순 정렬된 상태 유지)
   const byDate = {};
   for (const e of entries) {
     (byDate[e.date] = byDate[e.date] || []).push(e);

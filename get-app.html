@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>교회회계부 앱 받기</title>
+<style>
+  :root {
+    --bg: #f5f3ee;
+    --card-bg: #ffffff;
+    --border: #e4dfd4;
+    --text: #2b2620;
+    --sub: #8a7f6e;
+    --accent: #4f8a5b;
+    --accent-dark: #3f6f49;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", -apple-system, sans-serif;
+    color: var(--text);
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 28px;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  .icon { font-size: 2.2rem; margin-bottom: 10px; }
+  h1 { font-size: 1.25rem; margin: 0 0 8px; }
+  p.desc { color: var(--sub); font-size: 0.9rem; margin: 0 0 26px; line-height: 1.5; }
+  input[type="email"] {
+    width: 100%;
+    padding: 13px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 0.95rem;
+    margin-bottom: 12px;
+    outline: none;
+  }
+  input[type="email"]:focus { border-color: var(--accent); }
+  button {
+    width: 100%;
+    padding: 13px 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.98rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .msg { margin-top: 14px; font-size: 0.85rem; min-height: 1.2em; }
+  .msg.error { color: #c0392b; }
+  .msg.success { color: var(--accent-dark); }
+  .success-view { display: none; }
+  .success-view.show { display: block; }
+  .form-view.hide { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="form-view" id="formView">
+      <div class="icon">🧮</div>
+      <h1>교회회계부 앱 받기</h1>
+      <p class="desc">이메일 주소를 남겨주시면<br>다운로드 링크를 보내드립니다.</p>
+      <form id="requestForm">
+        <input type="email" id="emailInput" placeholder="이메일 주소" required>
+        <button type="submit" id="submitBtn">받기를 원합니다</button>
+      </form>
+      <div class="msg" id="msg"></div>
+    </div>
+    <div class="success-view" id="successView">
+      <div class="icon">✅</div>
+      <h1>신청 완료!</h1>
+      <p class="desc">입력하신 이메일로 곧<br>다운로드 링크를 보내드릴게요.</p>
+    </div>
+  </div>
+
+<script>
+  // 1) formspree.io 에서 Form을 만들고 아래 값을 발급받은 엔드포인트로 교체하세요.
+  //    예: https://formspree.io/f/abcdwxyz
+  const FORMSPREE_ENDPOINT = "https://formspree.io/f/mkjgrvzn";
+
+  const form = document.getElementById('requestForm');
+  const emailInput = document.getElementById('emailInput');
+  const submitBtn = document.getElementById('submitBtn');
+  const msg = document.getElementById('msg');
+  const formView = document.getElementById('formView');
+  const successView = document.getElementById('successView');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    msg.className = 'msg';
+
+    const email = emailInput.value.trim();
+    if (!email) return;
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = '보내는 중...';
+
+    try {
+      const res = await fetch(FORMSPREE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email,
+          _subject: '교회회계부 앱 다운로드 요청'
+        })
+      });
+
+      if (res.ok) {
+        formView.classList.add('hide');
+        successView.classList.add('show');
+      } else {
+        throw new Error('submit failed');
+      }
+    } catch (err) {
+      msg.textContent = '전송에 실패했어요. 잠시 후 다시 시도해주세요.';
+      msg.className = 'msg error';
+      submitBtn.disabled = false;
+      submitBtn.textContent = '받기를 원합니다';
+    }
+  });
+</script>
+</body>
+</html>

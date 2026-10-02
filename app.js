@@ -1,13 +1,16 @@
-// v4.105 | 2026-09-19 KST | 수정: 멀티 교회(멀티테넌트) 지원 —
+// v4.107 | 2026-10-03 KST | 수정: 백업 위치 안내를 기기별(iOS/기타) 메시지 + 확인 버튼 대화상자로 변경 —
 
 'use strict';
-const APP_VERSION = 'v4.105 (cache v4105)';
+const APP_VERSION = 'v4.107 (cache v4107)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
 // church-finances 저장소: true / finances 저장소: false
 // ============================================================
-const USE_FIREBASE = false;
+const USE_FIREBASE =  false;
+
+// 🔧 '주보 헌금명단' 기능 표시 여부 — true면 설정 /false면 해제, 데이터에 해당 메뉴가 보임
+const SHOW_BULLETIN =  false;
 
 // ============================================================
 // 🏠 교회 식별자 — 저장소(교회)마다 이 값만 고유하게 바꾸면 됨.
@@ -1659,6 +1662,24 @@ function showToast(msg) {
   t.classList.add('show');
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+// 확인 버튼을 눌러야 닫히는 안내 대화상자 (토스트는 긴 문구가 잘리고 금방 사라져서 대체)
+function showInfoDialog(title, msg) {
+  const old = document.getElementById('infoDialog');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'infoDialog';
+  wrap.style.cssText = 'position:absolute; inset:0; z-index:130; display:flex; align-items:center; justify-content:center; background:rgba(15,18,30,0.45); padding:24px;';
+  wrap.innerHTML = `
+    <div style="background:var(--card); border-radius:20px; padding:22px 20px 16px; width:100%; max-width:320px; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+      <div style="font-size:16px; font-weight:800; margin-bottom:10px;">${title}</div>
+      <div style="font-size:14px; line-height:1.65; color:var(--text-2); white-space:pre-line;">${msg}</div>
+      <button id="infoDialogOk" class="btn-primary" style="margin-top:18px; padding:13px 0; font-size:14.5px;">확인</button>
+    </div>`;
+  (document.getElementById('app') || document.body).appendChild(wrap);
+  wrap.querySelector('#infoDialogOk').addEventListener('click', () => wrap.remove());
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
 }
 
 function changeMonth(delta) {
@@ -6524,6 +6545,20 @@ function renderSettings() {
 
     <div class="settings-group">
       <div class="settings-group-title">데이터</div>
+      <div class="settings-row" id="rowAutoBackupToggle" style="cursor:pointer;">
+        <div>
+          <div class="settings-label">자동 백업</div>
+          <div class="settings-sub" id="autoBackupSub">매주 월요일 정오에 자동으로 백업해요</div>
+        </div>
+        <div class="switch" id="autoBackupSwitch"></div>
+      </div>
+      <div class="settings-row" id="rowAutoBackupDir" style="cursor:pointer;">
+        <div>
+          <div class="settings-label">백업 위치</div>
+          <div class="settings-sub" id="autoBackupDirSub">불러오는 중...</div>
+        </div>
+        ${ICONS.chevR}
+      </div>
       <div class="settings-row" id="rowExportExcel">
         <div>
           <div class="settings-label">엑셀로 내보내기</div>
@@ -6531,13 +6566,13 @@ function renderSettings() {
         </div>
         ${ICONS.download}
       </div>
-      <div class="settings-row" id="rowBulletinExcel">
+      ${SHOW_BULLETIN ? `<div class="settings-row" id="rowBulletinExcel">` : `<!--<div class="settings-row" id="rowBulletinExcel">`}
         <div>
           <div class="settings-label">주보 헌금명단</div>
           <div class="settings-sub">헌금 수입만 뽑아 분류/내용 형식의 엑셀로 내보내기</div>
         </div>
         ${ICONS.download}
-      </div>
+      ${SHOW_BULLETIN ? `</div>` : `</div>-->`}
       <div class="settings-row" id="rowExport">
         <div>
           <div class="settings-label">데이터 백업 (JSON)</div>
@@ -6624,7 +6659,7 @@ function renderSettings() {
   page.querySelector('#rowCats').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openCatManageSheet(); });
   page.querySelector('#rowItemStructure').addEventListener('click', () => openItemStructureSheet());
   page.querySelector('#rowExportExcel').addEventListener('click', exportExcel);
-  page.querySelector('#rowBulletinExcel').addEventListener('click', () => openBulletinRangeSheet());
+  page.querySelector('#rowBulletinExcel')?.addEventListener('click', () => openBulletinRangeSheet());
   page.querySelector('#rowExport').addEventListener('click', () => openBackupRangeSheet('download'));
   page.querySelector('#rowEmailBackup').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } openBackupRangeSheet('email'); });
   // 로그아웃
@@ -6821,7 +6856,30 @@ function renderSettings() {
   page.querySelector('#importFile').addEventListener('change', importData);
   page.querySelector('#rowBudgetImport').addEventListener('click', () => { if (!getIsAdmin()) { showToast('🔒 입력 모드에서만 사용 가능합니다'); return; } page.querySelector('#budgetImportFile').click(); });
   page.querySelector('#budgetImportFile').addEventListener('change', importBudgetPlanFromExcel);
+
+  // 자동 백업 설정 (매주 월요일 정오) — 토글과 백업 위치는 이 기기에만 저장됨 (기기별 개별 설정)
+  (async () => {
+    const sw = page.querySelector('#autoBackupSwitch');
+    const sub = page.querySelector('#autoBackupSub');
+    if (await getAutoBackupEnabled()) sw.classList.add('on');
+    const last = await getLastAutoBackupDate();
+    if (sub && last) sub.textContent = `마지막 백업: ${last} · 매주 월요일 정오`;
+    page.querySelector('#rowAutoBackupToggle').addEventListener('click', async () => {
+      const on = !sw.classList.contains('on');
+      await setAutoBackupEnabled(on);
+      sw.classList.toggle('on', on);
+      showToast(on ? '✅ 자동 백업을 켰어요 (매주 월요일 정오)' : '자동 백업을 껐어요');
+    });
+
+    // 백업 위치 — 폴더 핸들은 이 기기 IndexedDB에만 저장되므로 기기마다 따로 지정 필요
+    const dirSub = page.querySelector('#autoBackupDirSub');
+    const dirHandle = await getAutoBackupDirHandle();
+    if (dirSub) dirSub.textContent = dirHandle ? `📁 ${dirHandle.name} (이 기기)` : '미지정';
+    page.querySelector('#rowAutoBackupDir').addEventListener('click', pickAutoBackupFolder);
+  })();
+
   page.querySelector('#rowUpdate').addEventListener('click', async () => {
+    if (!confirm('데이터를 백업하셨습니까?\n\n업데이트하면 앱이 새로고침되며 최신 버전으로 교체됩니다.')) return;
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
       for (const reg of regs) {
@@ -7831,7 +7889,7 @@ function openMemberEditSheet(member, heongCat) {
 }
 
 /* =========================================================
-   자동 백업 (매주 일요일)
+   자동 백업 (매주 월요일 정오)
    ========================================================= */
 async function getAutoBackupEnabled() {
   const rec = await DB.get('settings', 'autoBackup');
@@ -7857,9 +7915,10 @@ async function setAutoBackupDirHandle(handle) {
   await DB.put('settings', { key: 'autoBackupDir', handle });
 }
 
-// 오늘이 일요일인지 확인
-function isSunday() {
-  return new Date().getDay() === 0;
+// 자동 백업 실행 시각 확인 — 매주 월요일 정오(12:00) 이후로 고정
+function isAutoBackupTime() {
+  const now = new Date();
+  return now.getDay() === 1 && now.getHours() >= 12;
 }
 
 /* =========================================================
@@ -7999,7 +8058,7 @@ function renderMaturitySheet(targets, today, email) {
 async function checkAndRunAutoBackup() {
   const enabled = await getAutoBackupEnabled();
   if (!enabled) return;
-  if (!isSunday()) return;
+  if (!isAutoBackupTime()) return;
   const today = todayStr();
   const last = await getLastAutoBackupDate();
   if (last === today) return; // 이미 오늘 백업함
@@ -8051,7 +8110,12 @@ async function runAutoBackup(manual = false) {
 
 async function pickAutoBackupFolder() {
   if (!window.showDirectoryPicker) {
-    showToast('이 기기에서는 폴더 지정이 지원되지 않아요 (iOS 미지원). 일요일에 자동 다운로드로 대신해요.');
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const msg = isIOS
+      ? '이 기기에서는 백업 폴더를 직접 지정할 수 없어요.\n백업 파일은 iCloud Drive의 다운로드(Downloads)에 저장 됩니다.'
+      : '이 기기에서는 백업 폴더를 직접 지정할 수 없어요.\n백업 파일은 기기의 다운로드(Download) 폴더에 저장 됩니다.';
+    showInfoDialog('백업 위치 안내', msg);
     return;
   }
   try {
@@ -12418,6 +12482,7 @@ async function initApp() {
   // Firebase 관련은 렌더링 후 백그라운드 실행 (초기 로딩 속도 영향 없도록)
   setTimeout(async () => { await restoreAdminState(); applyLockState(); renderTabbar(); }, 500);
   setTimeout(() => checkMaturityAndNotify(false), 5000);
+  setTimeout(() => checkAndRunAutoBackup(), 6000);
   if (USE_FIREBASE) setTimeout(async () => { await syncFromFirebase(); }, 3000);
 }
 

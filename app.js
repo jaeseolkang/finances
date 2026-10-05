@@ -1,7 +1,7 @@
-// v4.113 | 2026-10-05 KST | 수정: 일괄 입력 셀의 input 제거 — iOS 스크롤 컨테이너 캐럿 위치 버그 원천 차단, 패드/키보드 입력은 선택 셀에 직접 반영 —
+// v4.115 | 2026-10-05 KST | 수정: 일괄 입력 반복적용 연동 — 반복등록 교인 이름 파랑 표시, 이름 탭하면 반복 금액 자동 채움 —
 
 'use strict';
-const APP_VERSION = 'v4.113 (cache v4113)';
+const APP_VERSION = 'v4.115 (cache v4115)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
@@ -10222,6 +10222,7 @@ let bulkManageRows = false;   // 교인 가리기 관리 모드
 let bulkManageCols = false;   // 헌금종류 가리기 관리 모드
 let bulkGridData = {};        // { "groupId::헌금종류이름" : 천원 단위 숫자 }
 let bulkHiddenCols = [];      // 이 화면에서만 가려둔 헌금종류 이름 목록 (settings에 저장)
+let bulkTplMap = {};          // { groupId: 반복 템플릿 } — 개별 입력의 "🔄 반복 등록"과 같은 templates 데이터
 
 async function getBulkHiddenCols() {
   const rec = await DB.get('settings', 'bulkOfferHiddenCols');
@@ -10229,6 +10230,21 @@ async function getBulkHiddenCols() {
 }
 async function setBulkHiddenCols(v) {
   await DB.put('settings', { key: 'bulkOfferHiddenCols', value: v });
+}
+
+// 입력 중인 그리드 값(임시저장) — 일괄 저장 전까지 기기(settings)에 보관해
+// 시트를 닫거나 앱을 껐다 켜도 그대로 복원된다. 일괄 저장/입력삭제 시에만 지운다.
+async function getBulkDraft() {
+  const rec = await DB.get('settings', 'bulkOfferDraft');
+  return rec && rec.value && typeof rec.value === 'object' ? rec.value : { date: null, data: {} };
+}
+let bulkDraftTimer = null;
+function queueBulkDraftSave() {
+  clearTimeout(bulkDraftTimer);
+  bulkDraftTimer = setTimeout(() => {
+    DB.put('settings', { key: 'bulkOfferDraft', value: { date: bulkOfferDate, data: bulkGridData } })
+      .catch(e => console.error('draft save error:', e));
+  }, 300);
 }
 
 // 일괄 입력에 보여줄 교인(중분류) 목록 — 개별 입력과 같은 방식으로
@@ -10265,10 +10281,18 @@ async function openBulkOfferSheet(dateStr) {
   const heongCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
   if (!heongCat) { showToast('헌금 대분류가 없어요'); return; }
   bulkOfferDate = dateStr || todayStr();
-  bulkGridData = {};
+  // 저장하지 않고 닫은 입력값이 있으면 그대로 복원한다 (일괄 저장 전에는 지우지 않음)
+  const draft = await getBulkDraft();
+  bulkGridData = draft.data || {};
+  if (draft.date && Object.keys(bulkGridData).length > 0) bulkOfferDate = draft.date;
   bulkManageRows = false;
   bulkManageCols = false;
   bulkHiddenCols = await getBulkHiddenCols();
+  // 반복 등록된 교인 목록 로드 (개별 입력 "🔄 반복 등록"과 같은 templates 데이터)
+  bulkTplMap = {};
+  try {
+    (await DB.getAll('templates')).forEach(t => { if (t.categoryId === heongCat.id && t.personId) bulkTplMap[t.personId] = t; });
+  } catch (e) { console.error('tpl load error:', e); }
   renderBulkOfferSheet();
   openSheet('bulkOfferSheet');
 }
@@ -10294,15 +10318,18 @@ function renderBulkOfferSheet() {
   // 저장 버튼은 가리기 버튼줄 오른쪽에 같은 크기로 배치하고,
   // 요약(N명·총액)은 날짜줄 오른쪽에 작게 표시한다.
   const manageBtnStyle = on => `flex:1;font-size:12px;font-weight:700;border-radius:10px;padding:10px 0;white-space:nowrap;${on ? 'background:var(--primary);color:#fff;' : 'background:var(--bg);color:var(--text-2);'}`;
+  const anyTpl = groups.some(g => bulkTplMap[g.id]);
   const toolbarHTML = `
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
       <input type="date" id="bulkDate" class="dateinput" value="${bulkOfferDate}" style="flex:0 0 auto;width:136px;padding:8px 10px;font-size:13px;">
       <span style="font-size:11.5px;font-weight:700;color:var(--income);background:var(--income-light);border-radius:8px;padding:6px 8px;white-space:nowrap;">단위: 천원</span>
+      ${anyTpl ? `<span style="font-size:11px;font-weight:700;color:var(--primary);white-space:nowrap;">파란 이름 탭 → 반복 적용</span>` : ''}
       <span style="margin-left:auto;font-size:12px;color:var(--text-2);white-space:nowrap;"><b id="bulkFilledCount">${filledCount()}</b>명 · 총 <b id="bulkGrandLabel" class="tabular" style="color:var(--income);">${fmtMoney(grandTotal())}</b>원</span>
     </div>
     <div style="display:flex;gap:6px;margin-bottom:8px;">
       <button id="bulkManageRowsBtn" style="${manageBtnStyle(bulkManageRows)}">👥 교인 가리기</button>
       <button id="bulkManageColsBtn" style="${manageBtnStyle(bulkManageCols)}">🏷️ 항목 가리기</button>
+      <button id="bulkClearBtn" style="${manageBtnStyle(false)}">🗑️ 입력삭제</button>
       <button id="bulkSaveBtn" class="btn-primary" style="flex:1;margin-top:0;padding:10px 0;font-size:12.5px;border-radius:10px;white-space:nowrap;">일괄 저장</button>
     </div>`;
 
@@ -10344,7 +10371,7 @@ function renderBulkOfferSheet() {
         <tbody>
           ${groups.map(g => `
             <tr>
-              <td class="bulk-name-col">${escapeHTML(g.name)}</td>
+              <td class="bulk-name-col${bulkTplMap[g.id] ? ' bulk-name-tpl' : ''}"${bulkTplMap[g.id] ? ` data-tpl-gid="${g.id}" title="탭하면 반복 금액이 채워져요"` : ''}>${escapeHTML(g.name)}</td>
               ${cols.map(n => {
                 const v = Number(bulkGridData[bulkCellKey(g.id, n)]) || 0;
                 // 진짜 <input>을 쓰지 않는다: iOS는 스크롤 컨테이너 안의 input 커서(캐럿)를
@@ -10394,7 +10421,7 @@ function renderBulkOfferSheet() {
   `;
 
   sheet.querySelector('#bulkClose').addEventListener('click', () => closeSheet('bulkOfferSheet'));
-  sheet.querySelector('#bulkDate').addEventListener('change', (e) => { bulkOfferDate = e.target.value || todayStr(); });
+  sheet.querySelector('#bulkDate').addEventListener('change', (e) => { bulkOfferDate = e.target.value || todayStr(); queueBulkDraftSave(); });
   sheet.querySelector('#bulkManageRowsBtn').addEventListener('click', () => { bulkManageRows = !bulkManageRows; bulkManageCols = false; renderBulkOfferSheet(); });
   sheet.querySelector('#bulkManageColsBtn').addEventListener('click', () => { bulkManageCols = !bulkManageCols; bulkManageRows = false; renderBulkOfferSheet(); });
 
@@ -10443,6 +10470,7 @@ function renderBulkOfferSheet() {
     if (digits === '') delete bulkGridData[key]; else bulkGridData[key] = Number(digits);
     cell.textContent = digits === '' ? '' : Number(digits).toLocaleString('ko-KR');
     updateBulkTotals(sheet);
+    queueBulkDraftSave();   // 입력값을 기기에 자동 임시저장
   };
   const selectCell = cell => {
     if (selCell) selCell.classList.remove('sel');
@@ -10500,6 +10528,21 @@ function renderBulkOfferSheet() {
   }
 
   sheet.querySelector('#bulkSaveBtn')?.addEventListener('click', saveBulkOffer);
+
+  // 파란 이름(반복 등록된 교인) 탭 → 반복 금액을 그 행에 채운다
+  sheet.querySelectorAll('.bulk-name-tpl').forEach(td => {
+    td.addEventListener('click', () => applyBulkTplToRow(sheet, td.dataset.tplGid));
+  });
+
+  // 입력삭제 — 저장하지 않고 현재 입력값만 모두 지운다 (한 번 더 확인 후 실행)
+  sheet.querySelector('#bulkClearBtn')?.addEventListener('click', async () => {
+    if (Object.keys(bulkGridData).length === 0) { showToast('삭제할 입력 내용이 없어요'); return; }
+    if (!confirm('저장하지 않은 입력 내용을 모두 삭제할까요?\n삭제 후에는 복구할 수 없어요.')) return;
+    bulkGridData = {};
+    await DB.del('settings', 'bulkOfferDraft');
+    renderBulkOfferSheet();
+    showToast('입력 내용을 모두 삭제했어요');
+  });
 }
 
 // 셀 값이 바뀔 때 행 합계/열 합계/총합계만 부분 갱신 (전체 리렌더링으로 포커스가 날아가지 않게)
@@ -10522,6 +10565,29 @@ function updateBulkTotals(sheet) {
   const gl = sheet.querySelector('#bulkGrandLabel'); if (gl) gl.textContent = fmtMoney(grand);
   const fc = sheet.querySelector('#bulkFilledCount');
   if (fc) fc.textContent = groups.filter(g => cols.some(n => cellVal(g.id, n) > 0)).length;
+}
+
+// 반복 등록된 교인 이름 탭 → 템플릿 금액을 그 행에 채운다 (원 → 천원 단위로 환산)
+function applyBulkTplToRow(sheet, gid) {
+  const tpl = bulkTplMap[gid];
+  if (!tpl) return;
+  const heongCat = State.categories.find(c => c.name === '헌금' && c.type === 'income');
+  if (!heongCat) return;
+  const cols = bulkColumnNames(heongCat).filter(n => !bulkHiddenCols.includes(n));
+  let applied = 0;
+  tpl.lines.forEach(l => {
+    const si = State.subItems.find(s => s.id === l.subItemId);
+    if (!si || !cols.includes(si.name)) return;   // 숨겨둔 항목은 건너뜀
+    const v = (Number(l.amount) || 0) / 1000;
+    if (v > 0) bulkGridData[bulkCellKey(gid, si.name)] = v;
+    const cell = sheet.querySelector(`.bulk-cell[data-gid="${gid}"][data-col="${CSS.escape(si.name)}"]`);
+    if (cell) cell.textContent = v ? v.toLocaleString('ko-KR') : '';
+    applied++;
+  });
+  updateBulkTotals(sheet);
+  queueBulkDraftSave();
+  const g = (State.subGroups || []).find(x => x.id === gid);
+  showToast(applied > 0 ? `${g ? g.name + ' — ' : ''}반복 금액이 적용됐어요` : '적용할 항목이 없어요 (항목 가리기 상태를 확인해주세요)');
 }
 
 async function saveBulkOffer() {
@@ -10592,6 +10658,7 @@ async function saveBulkOffer() {
 
   await reloadData();
   bulkGridData = {};
+  await DB.del('settings', 'bulkOfferDraft');   // 저장 완료 시에만 임시저장 값 초기화
   renderBulkOfferSheet();
   if (State.dayDetailDate) renderDayDetail(State.dayDetailDate);
   renderCurrentPage();

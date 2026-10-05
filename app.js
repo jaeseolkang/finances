@@ -1,16 +1,16 @@
-// v4.107 | 2026-10-03 KST | 수정: 백업 위치 안내를 기기별(iOS/기타) 메시지 + 확인 버튼 대화상자로 변경 —
+// v4.113 | 2026-10-05 KST | 수정: 일괄 입력 셀의 input 제거 — iOS 스크롤 컨테이너 캐럿 위치 버그 원천 차단, 패드/키보드 입력은 선택 셀에 직접 반영 —
 
 'use strict';
-const APP_VERSION = 'v4.107 (cache v4107)';
+const APP_VERSION = 'v4.113 (cache v4113)';
 
 // ============================================================
 // 🔧 배포 설정 스위치
 // church-finances 저장소: true / finances 저장소: false
 // ============================================================
-const USE_FIREBASE =  false;
+const USE_FIREBASE = false;
 
 // 🔧 '주보 헌금명단' 기능 표시 여부 — true면 설정 /false면 해제, 데이터에 해당 메뉴가 보임
-const SHOW_BULLETIN =  false;
+const SHOW_BULLETIN = false;
 
 // ============================================================
 // 🏠 교회 식별자 — 저장소(교회)마다 이 값만 고유하게 바꾸면 됨.
@@ -1561,7 +1561,7 @@ function renderShell() {
     <div class="sheet" id="excelRangeSheet"></div>
     <div class="sheet" id="backupRangeSheet"></div>
     <div class="sheet" id="maturitySheet"></div>
-    <div class="sheet" id="bulkOfferSheet" style="max-height:100%;border-radius:0;z-index:96;"></div>
+    <div class="sheet" id="bulkOfferSheet" style="height:100%;max-height:100%;border-radius:0;z-index:96;"></div>
     <div class="toast" id="toast"></div>
   `;
   renderTabbar();
@@ -10290,12 +10290,20 @@ function renderBulkOfferSheet() {
   const grandTotal = () => groups.reduce((s, g) => s + rowTotal(g.id), 0);
   const filledCount = () => groups.filter(g => rowTotal(g.id) > 0).length;
 
+  // 버튼·여백을 최소화해 그리드(시트)가 차지하는 공간을 최대한 넓힌다.
+  // 저장 버튼은 가리기 버튼줄 오른쪽에 같은 크기로 배치하고,
+  // 요약(N명·총액)은 날짜줄 오른쪽에 작게 표시한다.
+  const manageBtnStyle = on => `flex:1;font-size:12px;font-weight:700;border-radius:10px;padding:10px 0;white-space:nowrap;${on ? 'background:var(--primary);color:#fff;' : 'background:var(--bg);color:var(--text-2);'}`;
   const toolbarHTML = `
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-      <input type="date" id="bulkDate" class="dateinput" value="${bulkOfferDate}" style="flex:0 0 auto;width:150px;padding:9px 12px;">
-      <span style="font-size:12px;font-weight:700;color:var(--income);background:var(--income-light);border-radius:8px;padding:6px 10px;">단위: 천원 (1 = 1,000원)</span>
-      <button id="bulkManageRowsBtn" style="font-size:12px;font-weight:700;border-radius:8px;padding:6px 10px;${bulkManageRows ? 'background:var(--primary);color:#fff;' : 'background:var(--bg);color:var(--text-2);'}">👥 교인 가리기</button>
-      <button id="bulkManageColsBtn" style="font-size:12px;font-weight:700;border-radius:8px;padding:6px 10px;${bulkManageCols ? 'background:var(--primary);color:#fff;' : 'background:var(--bg);color:var(--text-2);'}">🏷️ 항목 가리기</button>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+      <input type="date" id="bulkDate" class="dateinput" value="${bulkOfferDate}" style="flex:0 0 auto;width:136px;padding:8px 10px;font-size:13px;">
+      <span style="font-size:11.5px;font-weight:700;color:var(--income);background:var(--income-light);border-radius:8px;padding:6px 8px;white-space:nowrap;">단위: 천원</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--text-2);white-space:nowrap;"><b id="bulkFilledCount">${filledCount()}</b>명 · 총 <b id="bulkGrandLabel" class="tabular" style="color:var(--income);">${fmtMoney(grandTotal())}</b>원</span>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
+      <button id="bulkManageRowsBtn" style="${manageBtnStyle(bulkManageRows)}">👥 교인 가리기</button>
+      <button id="bulkManageColsBtn" style="${manageBtnStyle(bulkManageCols)}">🏷️ 항목 가리기</button>
+      <button id="bulkSaveBtn" class="btn-primary" style="flex:1;margin-top:0;padding:10px 0;font-size:12.5px;border-radius:10px;white-space:nowrap;">일괄 저장</button>
     </div>`;
 
   const rowManageHTML = `
@@ -10339,7 +10347,10 @@ function renderBulkOfferSheet() {
               <td class="bulk-name-col">${escapeHTML(g.name)}</td>
               ${cols.map(n => {
                 const v = Number(bulkGridData[bulkCellKey(g.id, n)]) || 0;
-                return `<td><input type="text" inputmode="numeric" class="bulk-cell-input" data-gid="${g.id}" data-col="${escapeHTML(n)}" value="${v ? v.toLocaleString('ko-KR') : ''}"></td>`;
+                // 진짜 <input>을 쓰지 않는다: iOS는 스크롤 컨테이너 안의 input 커서(캐럿)를
+                // 엉뚱한 위치에 그리는 WebKit 버그가 있어, 탭한 칸과 입력되는 칸이 어긋난다.
+                // 표시 전용 칸 + 커스텀 패드/키보드 직접 반영으로 아이폰·안드로이드·PC 동작을 통일한다.
+                return `<td class="bulk-cell-td"><div class="bulk-cell" role="textbox" tabindex="0" data-gid="${g.id}" data-col="${escapeHTML(n)}">${v ? v.toLocaleString('ko-KR') : ''}</div></td>`;
               }).join('')}
               <td class="bulk-total-col tabular" data-row-total="${g.id}" style="text-align:right;">${rowTotal(g.id) ? fmtMoney(rowTotal(g.id)) : ''}</td>
             </tr>`).join('')}
@@ -10354,12 +10365,10 @@ function renderBulkOfferSheet() {
       </table>
     </div>`;
 
-  const saveBarHTML = `
-    <div style="padding-top:10px;display:flex;align-items:center;gap:10px;flex-shrink:0;">
-      <div style="flex:1;font-size:12.5px;color:var(--text-2);">
-        <b id="bulkFilledCount">${filledCount()}</b>명 · 총 <b id="bulkGrandLabel" class="tabular" style="color:var(--income);">${fmtMoney(grandTotal())}</b>원
-      </div>
-      <button id="bulkSaveBtn" class="btn-primary" style="flex:1.2;margin-top:0;padding:13px 0;">일괄 저장</button>
+  // 커스텀 숫자 패드 — 네이티브 가상자판 대신 시트 맨 아래에 2단으로 표시
+  const keypadHTML = `
+    <div id="bulkKeypad" class="bulk-keypad" style="display:none;">
+      ${['1','2','3','4','5','⌫','6','7','8','9','0','완료'].map(k => `<button type="button" class="bulk-key" data-key="${k}">${k}</button>`).join('')}
     </div>`;
 
   const gridEmptyMsg = groups.length === 0
@@ -10373,13 +10382,13 @@ function renderBulkOfferSheet() {
       <h3>📊 헌금 일괄 입력</h3>
       <button class="sheet-close-btn" style="visibility:hidden;">${ICONS.close}닫기</button>
     </div>
-    <div class="sheet-body" style="display:flex;flex-direction:column;overflow:hidden;padding:8px 14px 16px;">
+    <div class="sheet-body" style="display:flex;flex-direction:column;overflow:hidden;padding:4px 14px 12px;">
       ${toolbarHTML}
       ${bulkManageRows ? rowManageHTML : bulkManageCols ? colManageHTML : `
         ${groups.length === 0 || cols.length === 0
           ? `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;text-align:center;line-height:1.7;">${gridEmptyMsg}</div>`
           : gridHTML}
-        ${saveBarHTML}
+        ${keypadHTML}
       `}
     </div>
   `;
@@ -10418,23 +10427,77 @@ function renderBulkOfferSheet() {
     });
   });
 
-  // 셀 입력 — 천원 단위 숫자만 입력. 입력할 때마다 행/열 합계를 갱신한다.
-  sheet.querySelectorAll('.bulk-cell-input').forEach(input => {
-    attachMoneyInputFormatter(input, (v) => {
-      const key = bulkCellKey(input.dataset.gid, input.dataset.col);
-      if (v === null) delete bulkGridData[key]; else bulkGridData[key] = v;
-      updateBulkTotals(sheet);
-    }, 9);
-    // Enter → 같은 열의 다음 행으로 이동 (엑셀처럼 세로 입력)
-    input.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      const inputs = Array.from(sheet.querySelectorAll('.bulk-cell-input'));
-      const idx = inputs.indexOf(input);
-      const next = inputs[idx + cols.length];
-      (next || inputs[0]).focus();
+  // ── 셀 선택/입력 모델 ──
+  // 셀은 표시 전용 <div>이고, 값은 bulkGridData가 진실의 원천이다.
+  // 탭(터치) 또는 Tab/클릭(포커스)으로 셀을 선택하고,
+  // 커스텀 패드(모바일) 또는 물리 키보드(PC)로 선택된 셀에 숫자를 넣는다.
+  const wrap = sheet.querySelector('.bulk-grid-wrap');
+  const keypad = sheet.querySelector('#bulkKeypad');
+  const isTouch = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  let selCell = null;
+
+  const cellDigits = cell => rawDigits(cell.textContent);
+  const applyDigits = (cell, digits) => {
+    digits = digits.slice(0, 9);
+    const key = bulkCellKey(cell.dataset.gid, cell.dataset.col);
+    if (digits === '') delete bulkGridData[key]; else bulkGridData[key] = Number(digits);
+    cell.textContent = digits === '' ? '' : Number(digits).toLocaleString('ko-KR');
+    updateBulkTotals(sheet);
+  };
+  const selectCell = cell => {
+    if (selCell) selCell.classList.remove('sel');
+    selCell = cell;
+    if (!cell) return;
+    cell.classList.add('sel');
+    if (keypad && isTouch) keypad.style.display = 'grid';
+    // 선택된 셀이 패드나 sticky 합계 행에 가려지지 않도록 그리드 내부에서만 스크롤
+    setTimeout(() => cell.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 60);
+  };
+
+  if (wrap) {
+    sheet.querySelectorAll('.bulk-cell').forEach(cell => {
+      cell.addEventListener('click', () => selectCell(cell));
+      cell.addEventListener('focus', () => selectCell(cell));
     });
-  });
+    // PC 물리 키보드 — 선택된 셀에 직접 반영 (숫자/백스페이스/Enter/Esc)
+    wrap.addEventListener('keydown', (e) => {
+      if (!selCell) return;
+      if (/^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        applyDigits(selCell, cellDigits(selCell) + e.key);
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        applyDigits(selCell, cellDigits(selCell).slice(0, -1));
+      } else if (e.key === 'Enter') {
+        // Enter → 같은 열의 다음 행으로 이동 (엑셀처럼 세로 입력)
+        e.preventDefault();
+        const cells = Array.from(sheet.querySelectorAll('.bulk-cell'));
+        const idx = cells.indexOf(selCell);
+        (cells[idx + cols.length] || cells[0]).focus();
+      } else if (e.key === 'Escape') {
+        selCell.blur();
+      }
+    });
+  }
+
+  // 패드 키 — 선택된 셀의 숫자를 직접 갱신한다.
+  // 커서가 없는 구조라 어느 기기든 '보이는 칸 = 입력되는 칸'이 보장된다.
+  if (keypad) {
+    keypad.querySelectorAll('.bulk-key').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        if (key === '완료') {
+          keypad.style.display = 'none';
+          if (selCell) { selCell.classList.remove('sel'); selCell = null; }
+          return;
+        }
+        if (!selCell) return;
+        let digits = cellDigits(selCell);
+        digits = key === '⌫' ? digits.slice(0, -1) : digits + key;
+        applyDigits(selCell, digits);
+      });
+    });
+  }
 
   sheet.querySelector('#bulkSaveBtn')?.addEventListener('click', saveBulkOffer);
 }
@@ -12467,6 +12530,16 @@ async function addSubOrPerson(sheet, categoryId, mode) {
   await reloadData();
   renderCatSubSheet(categoryId, mode);
 }
+
+/* =========================================================
+   VIEWPORT — 과거에는 여기서 visualViewport로 body를 자판 위 영역에
+   고정했지만, iOS는 fixed 요소의 '그려지는 위치'와 '터치 판정 위치'를
+   따로 계산해서 이 고정이 걸리는 순간 버튼의 실제 터치 영역이 아래로
+   밀렸다. 게다가 iOS가 16px 미만 입력 칸 터치 시 화면을 자동 확대하면
+   그 확대를 자판으로 오인해 고정이 잘못 발동했다.
+   지금은 일괄 입력에 커스텀 숫자 패드를 쓰므로 네이티브 자판이 뜨지
+   않아 이런 고정 자체가 필요 없다. (셀 글꼴 16px로 자동확대도 차단)
+   ========================================================= */
 
 /* =========================================================
    INIT

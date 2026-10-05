@@ -1,9 +1,10 @@
-<!-- 2026-07-02 KST | 수정: 계정 탭 연도 선택 버튼 CSS 추가 -->
+<!-- 2026-10-05 KST | 수정: 일괄 입력 시트 전체 높이 고정 + 셀/패드 터치 영역 정합화 -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- interactive-widget=resizes-content: 안드로이드 크롬에서 자판이 올라올 때 레이아웃 뷰포트 자체를 줄여줌 (iOS는 app.js의 visualViewport 처리가 담당) -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
 <title>교회회계 프로그램</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D6CDF">
@@ -73,6 +74,19 @@ input,textarea,select{font-family:inherit; color:inherit;}
   position:relative;
   background:var(--bg);
   overflow:hidden;
+}
+
+/* ===== iOS 터치 정합성 =====
+   iOS Safari는 버튼·링크를 누르면 그 자리에 회색 하이라이트를 띄우고,
+   길게 누르면 텍스트 선택/콜아웃이 떠서 위치가 어긋나 보인다.
+   모든 버튼·입력 칸·패드 키에서 그 효과를 없앤다. */
+button, .bulk-cell, .bulk-key, label {
+  -webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none;
+}
+button, .bulk-key {
+  touch-action:manipulation;
+  user-select:none; -webkit-user-select:none;
 }
 
 /* ===== Top App Bar ===== */
@@ -1016,13 +1030,38 @@ input,textarea,select{font-family:inherit; color:inherit;}
 .bulk-table thead .bulk-name-col{z-index:4; background:var(--bg);}
 .bulk-table tfoot td{position:sticky; bottom:0; z-index:2; background:var(--bg); font-weight:800;}
 .bulk-table tfoot .bulk-name-col{z-index:3; background:var(--bg);}
-.bulk-cell-input{
-  width:66px; border:none; outline:none; background:transparent;
-  text-align:right; font-size:13px; font-variant-numeric:tabular-nums; color:var(--text-1);
+/* 터치 영역 = 보이는 칸 전체. 셀은 <input>이 아니라 표시 전용 <div>다.
+   iOS는 스크롤 컨테이너 안 input의 커서를 엉뚱한 위치에 그리는 버그가 있어서
+   진짜 입력 칸을 두면 '탭한 칸 ≠ 입력되는 칸'이 된다. 그래서 커서를 없애고
+   선택 표시(.sel)만 보여주며, 값은 커스텀 패드/키보드가 직접 넣는다. */
+.bulk-table td.bulk-cell-td{padding:0;}
+.bulk-cell{
+  width:100%; min-width:66px; height:100%; min-height:38px; padding:6px 6px;
+  display:flex; align-items:center; justify-content:flex-end;
+  text-align:right; font-size:14px; font-variant-numeric:tabular-nums; color:var(--text-1);
+  outline:none; cursor:pointer;
+  user-select:none; -webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;
 }
-.bulk-cell-input:focus{background:var(--primary-light); border-radius:6px;}
+.bulk-cell.sel{background:var(--primary-light); border-radius:6px;}
 .bulk-table .bulk-total-col{font-weight:800; text-align:right; background:#FAFBFD;}
 .bulk-table tfoot .bulk-total-col{background:var(--bg);}
+/* ===== 헌금 일괄 입력 커스텀 숫자 패드 =====
+   네이티브 가상자판(거의 화면 절반)을 대체하는 2단 배열 패드.
+   시트 맨 아래에 붙어서 그리드가 최대한 넓게 보이도록 한다. */
+.bulk-keypad{
+  grid-template-columns:repeat(6,1fr); gap:6px;
+  padding-top:8px; flex-shrink:0;
+}
+.bulk-key{
+  height:44px; border-radius:10px; background:var(--bg);
+  font-size:18px; font-weight:700; color:var(--text-1);
+  display:flex; align-items:center; justify-content:center;
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;
+}
+.bulk-key:active{background:var(--primary-light); color:var(--primary);}
+.bulk-key[data-key="⌫"], .bulk-key[data-key="완료"]{font-size:13px; color:var(--text-2);}
 </style>
 </head>
 <body>

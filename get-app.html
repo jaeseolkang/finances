@@ -1,4 +1,4 @@
-<!-- 2026-10-07 11:36 KST | 수정: 신청 완료 메시지 대신 전송 성공 시 앱(https://jaeseolkang.github.io/finances)으로 바로 이동 -->
+<!-- 2026-10-07 11:41 KST | 수정: 버튼을 누르면 전송 결과와 관계없이 바로 앱(https://jaeseolkang.github.io/finances)을 열도록 변경 -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -78,7 +78,6 @@
         <input type="email" id="emailInput" placeholder="이메일 주소" required>
         <button type="submit" id="submitBtn">받기를 원합니다</button>
       </form>
-      <div class="msg" id="msg"></div>
     </div>
   </div>
 
@@ -87,47 +86,37 @@
   //    예: https://formspree.io/f/abcdwxyz
   const FORMSPREE_ENDPOINT = "https://formspree.io/f/mkjgrvzn";
 
-  // 신청이 전송되면 바로 이 주소(교회회계 앱)로 이동합니다.
+  // 버튼을 누르면 바로 이 주소(교회회계 앱)로 이동합니다.
   const APP_URL = "https://jaeseolkang.github.io/finances";
 
   const form = document.getElementById('requestForm');
   const emailInput = document.getElementById('emailInput');
   const submitBtn = document.getElementById('submitBtn');
-  const msg = document.getElementById('msg');
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    msg.textContent = '';
-    msg.className = 'msg';
 
     const email = emailInput.value.trim();
     if (!email) return;
 
     submitBtn.disabled = true;
-    submitBtn.textContent = '보내는 중...';
+    submitBtn.textContent = '앱으로 이동 중...';
 
-    try {
-      const res = await fetch(FORMSPREE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: email,
-          _subject: '교회회계부 앱 다운로드 요청'
-        })
-      });
+    // 신청 내용은 전송하되, 결과와 관계없이 바로 앱을 엽니다.
+    // (전송이 늦어져도 최대 2초만 기다린 뒤 이동)
+    const send = fetch(FORMSPREE_ENDPOINT, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        _subject: '교회회계부 앱 다운로드 요청'
+      })
+    }).catch(() => {});
+    const wait = new Promise((resolve) => setTimeout(resolve, 2000));
+    await Promise.race([send, wait]);
 
-      if (res.ok) {
-        submitBtn.textContent = '앱으로 이동 중...';
-        window.location.href = APP_URL;
-      } else {
-        throw new Error('submit failed');
-      }
-    } catch (err) {
-      msg.textContent = '전송에 실패했어요. 잠시 후 다시 시도해주세요.';
-      msg.className = 'msg error';
-      submitBtn.disabled = false;
-      submitBtn.textContent = '받기를 원합니다';
-    }
+    window.location.href = APP_URL;
   });
 </script>
 </body>
